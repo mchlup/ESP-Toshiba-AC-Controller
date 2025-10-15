@@ -76,111 +76,90 @@ ESP zařízení čte a odesílá příkazy v binárním formátu podle **Toshiba
 
 ---
 
-## 🧮 Mapování Modbus TCP registrů
+## 🧮 Mapování Modbus TCP registrů (rozšířená dokumentace)
 
-| Adresa | Název | Typ | Popis |
-|:--|:--|:--|:--|
-| 0 | Mode | RW | 0 = Auto, 1 = Cool, 2 = Heat, 3 = Dry, 4 = Fan |
-| 1 | FanSpeed | RW | 0–5 (Quiet–Auto) |
-| 2 | Swing | RW | 0 = OFF, 1 = ON |
-| 3 | Power | RW | 0 = OFF, 1 = ON |
-| 4 | SetTemp | RW | °C |
-| 10 | RoomTemp | R | °C |
-| 11 | OutdoorTemp | R | °C |
-| 12 | OperatingState | R | 0 = Standby, 1 = Running |
-| 13 | ErrorCode | R | aktuální chybový kód |
+| Adresa | Název | Typ | Rozsah | Popis a chování |
+|:--|:--|:--|:--|:--|
+| **0** | **Mode** | RW | 0–4 | Nastavení režimu. Odpovídá příkazu `CMD 176` (MODE). <br>0=Auto, 1=Cool, 2=Heat, 3=Dry, 4=Fan |
+| **1** | **SetTemp** | RW | 16–30 °C | Nastavená cílová teplota (`CMD 179`). Hodnota se zaokrouhluje na celé °C. |
+| **2** | **FanSpeed** | RW | 0–5 | Rychlost ventilátoru (`CMD 160`). <br>0=Quiet, 1–4=Manual, 5=Auto |
+| **3** | **Swing** | RW | 0/1 | Natáčení lamel (`CMD 163`). <br>0=OFF, 1=ON |
+| **4** | **Power** | RW | 0/1 | Zapnutí/vypnutí klimatizace (`CMD 128`). |
+| **5** | **RoomTemp** | R | 0–50 | Aktuální teplota místnosti (`CMD 187`). |
+| **6** | **OutdoorTemp** | R | −40–60 | Teplota venkovního výměníku (`CMD 190`). |
+| **7** | **OperatingState** | R | 0/1 | 0=Standby, 1=Kompresor běží. |
+| **8** | **ErrorCode** | R | 0–255 | Chybový kód dle servisního manuálu Toshiba. |
+| **9** | **Flags** | R | bitmask | Stavová bitová maska (např. komunikace HVAC, MQTT, Wi-Fi). |
+| **10** | **Uptime (s)** | R | 0–65535 | Počet sekund od restartu. |
+
+### 🔹 Poznámky k Modbus TCP
+- Komunikuje na portu **502** (standardní Modbus TCP).  
+- Čtení doporučeno v intervalu **2–5 s**.  
+- Zápis se provádí pouze při změně hodnoty.  
+- Při neplatném zápisu (mimo rozsah) se příkaz ignoruje a vrací chyba.  
+- Po ztrátě spojení s klimatizací se registry zmrazí, `ErrorCode=255`.
 
 ---
 
-## 🖥️ Webové rozhraní
+## 🧱 Integrace s Loxone
 
-WebUI je vloženo přímo do firmware a umožňuje:
+Projekt je kompatibilní se systémem **Loxone Config** a má připravenou oficiální šablonu XML:
 
-- přehled aktuálních stavů (režim, teplota, ventilátor)
-- okamžité ovládání všech parametrů
-- aktualizaci firmware (OTA)
-- reset do továrního nastavení
-- diagnostiku komunikace
+📄 **Soubor:** `MB_Toshiba RAS-B10J2KVG-E MODBUS TCP.xml`
 
-Přístup:  
-**http://toshiba-hvac.local**  
-nebo přímo IP adresa zařízení.
+### 🔹 Import do Loxone Config
+1. Otevři **Loxone Config** → záložka **Periferie → Modbus**  
+2. Klikni pravým tlačítkem na Modbus zařízení → **Importovat šablonu**
+3. Vyber přiložený soubor XML
+4. Po importu se automaticky vytvoří vstupy/výstupy:
+   - Power, Mode, Fan, Swing, Setpoint
+   - RoomTemp, OutdoorTemp, ErrorCode, OperatingState, Flags, Uptime
+5. Uprav IP adresu a port (502)
+
+### 🔹 Doporučené adresy (z XML)
+| Loxone blok | Typ | Adresa | Komentář |
+|:--|:--|:--|:--|
+| Power | 3/6 | 0 | 0=Off, 1=On |
+| Setpoint | 3/6 | 1 | 17–30 °C |
+| Mode | 3/6 | 2 | 0=Auto, 1=Cool, 2=Heat, 3=Dry, 4=Fan |
+| Fan | 3/6 | 3 | 0–5 |
+| Swing | 3/6 | 4 | 0=Off, 1=On |
+| IndoorTemp | 3 | 5 | °C ×10 |
+| OutdoorTemp | 3 | 6 | °C ×10 |
+| OperatingState | 3 | 7 | 0=Standby, 1=Run |
+| Flags | 3 | 8 | Bitmask |
+| ErrorCode | 3 | 9 | Chybový kód |
+| Uptime | 3 | 11 | Sekundy |
+
+### 🔹 Tipy pro Loxone
+- Používej **Modbus Holding Registry (function 3/6)**.  
+- Hodnoty teploty (`IndoorTemp`, `OutdoorTemp`) jsou ve formátu **int16 ×10** – vyděl 10 pro zobrazení ve °C.  
+- Pro komfortní integraci doporučeno doplnit vizualizační prvky (ikonky, barvy režimů).
 
 ---
 
 ## 🛠️ Instalace
 
-### 🔹 Arduino IDE
-1. Vyber desku **ESP8266 (NodeMCU / Wemos D1 Mini)** nebo **ESP32**  
-2. Naimportuj knihovny:
-   - `WiFiManager`, `PubSubClient`, `ArduinoOTA`, `ArduinoJson`
-   - `ModbusIP_ESP8266` nebo `ModbusIP_ESP32`
-   - `ToshibaCarrierHvac`  
-3. Nahraj soubor `ESP-Toshiba-AC-Modbus.ino`
-4. Připoj ESP k TCC-Link vodičům klimatizace
-
----
-
-## 🧪 Testování
-
-- Po spuštění se ESP přepne do **AP režimu** `Toshiba-HVAC-Setup`
-- Připoj se z mobilu nebo PC  
-  a nastav Wi-Fi připojení.
-- Po úspěšném připojení otevři webové rozhraní a zkontroluj data.
-- Ověř komunikaci přes Modbus TCP např. v Loxone nebo QModMaster.
-
----
-
-## 🔍 Diagnostika (Telnet)
-
-| Příkaz | Funkce |
-|:--|:--|
-| `help` | výpis dostupných příkazů |
-| `state` | výpis stavových hodnot |
-| `hvac raw on/off` | zapnutí logování rámců |
-| `modbus dump` | výpis aktuálních registrů |
-| `factoryreset` | obnovení výchozí konfigurace |
-
----
-
-## 🔧 OTA aktualizace
-
-- WebUI → **Aktualizace firmware**
-- Vyber `.bin` soubor → „Nahrát a aktualizovat“
-- Po nahrání proběhne automatický restart.
-
----
-
-## 🧰 Kompatibilita
-
-Testováno s následujícími jednotkami:
-- **Toshiba Shorai / Seiya / Signatur / Daisekai / Super Digital Inverter**
-- **Modely RAS-25/35PKVSG, RAS-10–22N3AV2-E, RAS-M10U2MUVG-E**
-- Připojení přes servisní konektor **CN40 (TCC-Link)**
-
----
-
-## 📄 Licence
-
-Tento projekt je šířen pod licencí **MIT License**.  
-Závislosti (ToshibaCarrierHvac, ModbusIP, WiFiManager) si zachovávají své vlastní licence.
+1. Vyber desku **ESP8266 (NodeMCU / Wemos D1 Mini)** nebo **ESP32**
+2. Přidej knihovny: `WiFiManager`, `PubSubClient`, `ArduinoOTA`, `ModbusIP`, `ToshibaCarrierHvac`
+3. Nahraj `ESP-Toshiba-AC-Modbus.ino`
+4. Připoj k TCC-Link (CN40) vodičům klimatizace
 
 ---
 
 ## 🧠 Reference a dokumentace
 
-- 📘 Toshiba **AC E15-3R1 Application Control Manual**  
-- 📗 Toshiba **TCB-IFMB641TLE Modbus Interface Manual**  
-- 📙 Toshiba **Controls 2015 v1**  
-- 📒 Toshiba **Shorai / Signatur Service Manuals**  
-- 📔 **ToshibaCarrierHvac Library**  
-- 🧾 Datasheety převodníků RS-485 ↔ TTL a logických úrovní
+- 📘 Toshiba **AC E15-3R1 Application Control Manual**
+- 📗 Toshiba **TCB-IFMB641TLE Modbus Interface Manual**
+- 📙 Toshiba **Controls 2015 v1**
+- 📒 Toshiba **Shorai / Signatur Service Manuals**
+- 📔 **ToshibaCarrierHvac Library**
+- 📄 **Loxone Modbus XML Template** (součást projektu)
 
 ---
 
 ## 👨‍🔧 Autor
 
 **Martin Chlup**  
-Projekt ESP-Toshiba-AC-Modbus  
 Integrace klimatizací Toshiba ↔ Loxone / Home Assistant / Modbus / MQTT  
 📧 *mchlup (at) gmail (dot) com*
