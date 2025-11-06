@@ -17,14 +17,21 @@
 #include <ArduinoOTA.h>
 #include <ArduinoJson.h>
 #include <WiFiClient.h>
-#include <WiFiClientSecure.h>
+#if (USE_MQTT_TLS)
+  #include <WiFiClientSecure.h>
+#endif
 #include "ToshibaCarrierHvac.h"
+
+#if defined(ESP32)
+  #include <HardwareSerial.h>
+#endif
 
 // ===== Modbus knihovna (název se liší podle platformy) =====
 #if defined(ESP8266)
   #include <ModbusIP_ESP8266.h>
 #elif defined(ESP32)
-  #include <ModbusIP_ESP32.h>
+  //#include <ModbusIP_ESP32.h>
+  #include <ModbusIP_ESP8266.h>
 #endif
 
 #include <math.h>
@@ -38,7 +45,6 @@
   // ESP32 nepotřebuje ESP8266httpUpdate.h
   #include <Update.h>    // třída Update (ESP32 core)
 #endif
-
 
 struct DeviceConfig;
 
@@ -57,11 +63,50 @@ void HvacRawAnalyzer_onFrame(bool tx, uint8_t cmd, const uint8_t* payload, uint8
 }
 
 // ================== HW & BUILD CONFIG ==================
-#define RX_PIN        12      // GPIO12 (D6)
-#define TX_PIN        14      // GPIO14 (D5)
-#define LED_PIN        2      // Builtin LED (active LOW), GPIO02
-#define RED_LED_PIN   -1      // GPIO15 (D8). Dejte -1, pokud LED není připojena.
-#define FLASH_BTN_PIN   0     // FLASH = GPIO0 (LOW = stisk)
+#if defined(ESP8266)
+  // NodeMCU / Wemos D1 mini: osvědčené piny pro SW/HW serial
+  #define RX_PIN         12      // D6 (GPIO12)
+  #define TX_PIN         14      // D5 (GPIO14)
+  #define LED_PIN         2      // D4 (GPIO2), active LOW
+  #define FLASH_BTN_PIN   0      // D3 (GPIO0) – FLASH
+#elif defined(ESP32)
+  // Jemnější rozlišení podle cílové varianty ESP32
+  #if defined(CONFIG_IDF_TARGET_ESP32C3)
+    // ESP32-C3 má pouze UART0/1. Doporučené piny pro UART1:
+    // RX=GPIO20, TX=GPIO21 (na většině DevKitM-1 vyvedené)
+    #define RX_PIN       3
+    #define TX_PIN       4
+    #define FLASH_BTN_PIN 9      // BOOT na C3 bývá GPIO9
+    #define LED_PIN      -1      // většina C3 nemá klasickou LED na GPIO2
+  #elif defined(CONFIG_IDF_TARGET_ESP32S2)
+    // S2: běžně dostupné piny pro HW serial
+    #define RX_PIN       16
+    #define TX_PIN       17
+    #define FLASH_BTN_PIN 0
+    #define LED_PIN       2
+  #elif defined(CONFIG_IDF_TARGET_ESP32S3)
+    // S3 DevKit: UART2 na 16/17, BOOT na GPIO0, LED obvykle na 2
+    #define RX_PIN       16
+    #define TX_PIN       17
+    #define FLASH_BTN_PIN 0
+    #define LED_PIN       2
+  #else
+    // Klasické ESP32 (WROOM/DEVKIT V1): UART2 -> 16/17
+    #define RX_PIN       16
+    #define TX_PIN       17
+    #define FLASH_BTN_PIN 0
+    #define LED_PIN       2      // GPIO2 (na většině DevKit je LED na 2)
+  #endif
+#endif
+
+#ifndef LED_PIN
+  #define LED_PIN 2
+#endif
+
+#ifndef RED_LED_PIN
+  #define RED_LED_PIN   -1       // Dejte -1, pokud LED není připojena.
+#endif
+
 #define BTN_DEBOUNCE_MS 30
 #define BTN_SHORT_MIN   50
 #define BTN_SHORT_MAX   2000
@@ -208,10 +253,24 @@ char deviceLabel[32] = {0};  // zobrazený název (name → room-AC → AC-<id>)
 DeviceConfig deviceConfig;
 
 // ================== Globals ==================
-ToshibaCarrierHvac hvac(RX_PIN, TX_PIN);
+// HVAC instance:
+#if defined(ESP8266)
+  ToshibaCarrierHvac hvac(RX_PIN, TX_PIN);       // SW serial uvnitř knihovny
+#elif defined(ESP32)
+  #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32S2)
+  HardwareSerial HVAC_SERIAL(1);   // C3/S2 mají jen UART0/1 -> použij UART1
+#else
+  HardwareSerial HVAC_SERIAL(2);   // klasické ESP32/ESP32-S3 -> UART2
+#endif
+  // HW UART2
+  ToshibaCarrierHvac hvac(&HVAC_SERIAL);         // knihovna si sama volá begin()
+#endif
+
 WiFiManager wifiManager;
 WiFiClient        wifiClientPlain;
-WiFiClientSecure  wifiClientTLS;
+#if (USE_MQTT_TLS)
+  WiFiClientSecure  wifiClientTLS;
+#endif
 PubSubClient      mqttClient;
 //ESP8266WebServer server(80);
 WebSrv server(80);
@@ -227,7 +286,7 @@ uint32_t lastStatePub = 0;
 bool mqttEnabled = false;          // výchozí OFF
 int  mqttFailCount = 0;
 uint32_t lastMqttAttempt = 0;
-volatile bool otaActive = true;   // << oprava: start na false
+volatile bool otaActive = false;   // << oprava: start na false
 uint32_t      otaStartMs = 0;
 static bool   otaStarted = false;  // hlídá, zda už běží OTA (pro runtime zapnutí)
 static const uint32_t BOOT_RED_LED_MS = 2000UL;
@@ -822,11 +881,11 @@ static bool isMqttHostConfigured() {
 }
 
 static void configureMqttClient() {
-  if (USE_MQTT_TLS) {
+  #if (USE_MQTT_TLS)
     mqttClient.setClient(wifiClientTLS);
-  } else {
+  #else
     mqttClient.setClient(wifiClientPlain);
-  }
+  #endif
   mqttClient.setServer(deviceConfig.mqttServer, deviceConfig.mqttPort);
   mqttClient.setCallback(mqttCallback);
 }
@@ -2297,6 +2356,11 @@ void setup() {
   //hvac.begin(); // << povolit linku podle knihovny
 
   Serial.println(F("HVAC UART init done."));
+  #if defined(ESP32)
+    // Přemapuj HW UART na zvolené piny a drž 9600 8E1 (jak používá knihovna)
+    HVAC_SERIAL.end();
+    HVAC_SERIAL.begin(9600, SERIAL_8E1, RX_PIN, TX_PIN);
+  #endif
 
   loadConfig();
 
@@ -2426,7 +2490,9 @@ void setup() {
   // MQTT – povol dle configu, jen pokud je host nastaven
   mqttEnabled = deviceConfig.mqttEnable != 0;
   if (mqttEnabled && isMqttHostConfigured()) {
-    if (USE_MQTT_TLS) wifiClientTLS.setInsecure(); // volitelně (vývoj)
+    #if (USE_MQTT_TLS)
+      wifiClientTLS.setInsecure(); // volitelně (vývoj)
+    #endif // volitelně (vývoj)
     configureMqttClient();
   }
 
@@ -2644,7 +2710,7 @@ void loop() {
     } else if (!hvacConn) {
       digitalWrite(LED_PIN, (now / 500) % 2 ? LOW : HIGH);
     } else {
-      digitalWrite(LED_PIN, LOW);                                   // OK = trvale svítí
+      if (LED_PIN >= 0) digitalWrite(LED_PIN, LOW);                                 // OK = trvale svítí
     }
   }
 
