@@ -15,7 +15,7 @@ a backup and bench testing of UART traffic and WebUI/Modbus operation.
   HREG7 semantics; clients relying on the old mapping must be updated.
 - Initialise temperatures as unknown (`INT8_MIN`) to avoid false 0 Celsius.
 - Fix memory safety in HVAC receive header scanning and bounded feedback/reply copying.
-- Replace blocking handshake, serial receive and initial polling with scheduled steps.
+- UART regression hotfix: reverted handshake, RX collection and query timing to the original Toshiba driver (six SYN frames / 200 ms intervals, 250 ms RX window). Kept bounds checks and UART diagnostics.
 - Add UART valid/invalid packet counters in driver.
 - Enable ESP32-C3 SuperMini GPIO8 active-low status LED.
 - Correct stale heartbeat proxy: commands no longer imply received HVAC data.
@@ -52,3 +52,7 @@ pio run -e esp32c3
 ```
 After a successful build, test HVAC serial handshake and commands with live
 unit before production use. Verify each control path (WebUI, MQTT, Modbus).
+
+## UART regression hotfix (2026-10-16)
+
+After an experimental nonblocking UART rewrite, the ESP failed to communicate with the Toshiba unit. The nonblocking rewrite changed handshake timing and packet collection in ways not established by real Toshiba protocol traces. This branch now restores the **original handshake, ACK sequence, 250 ms UART receive collector and synchronous 11-query cadence**. `chunkSplit` remains bounds-checked and recognizes the valid 02 00 00/01/02/03 frame prefixes. Recompile and power-cycle both controller and unit for a fresh handshake before testing. The revert is based on the previously working implementation and still requires physical verification.
