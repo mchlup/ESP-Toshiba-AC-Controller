@@ -217,9 +217,9 @@ static void fillDefaultConfig(DeviceConfig &cfg) {
   cfg.modbusUnitId = 1;
 
   // OTA/Telnet: výchozí OFF (hesla prázdná = žádné)
-  cfg.otaEnable    = 1;
+  cfg.otaEnable    = 0;
   cfg.otaPassword[0] = '\0';
-  cfg.telnetEnable = 1;
+  cfg.telnetEnable = 0;
   cfg.telnetPassword[0] = '\0';
 
   // Device ID: default z MAC (useCustomId=0)
@@ -932,7 +932,7 @@ static void configureMqttClient() {
 }
 
 static void connectToMQTT() {
-  if (!mqttEnabled) return;
+  if (!mqttEnabled || WiFi.status() != WL_CONNECTED) return;
   if (mqttClient.connected()) return;
   if (!isMqttHostConfigured()) return;
   uint32_t now = millis();
@@ -1357,7 +1357,9 @@ async function apiState(){
 
 async function send(cmd){
   try{
-    const r = await fetch('/command?cmd='+encodeURIComponent(cmd),{cache:'no-store'});
+    const r = await fetch('/command',{method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},
+      credentials:'same-origin',body:'cmd='+encodeURIComponent(cmd),cache:'no-store'});
     if(!r.ok) throw 0;
   }catch(e){}
 }
@@ -1504,7 +1506,9 @@ async function saveCfgUI(){
     telnet_pass:getVal('#cfg_telnet_pass'),
   });
   try{
-    const r = await fetch('/mqttconfig?'+q.toString(), {cache:'no-store'});
+    const r = await fetch('/mqttconfig', {method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},
+      credentials:'same-origin',body:q.toString(),cache:'no-store'});
     const msg = $('#cfgMsg');
     if(r.ok){
       if(msg) msg.textContent = 'Konfigurace uložena. Aplikuji…';
@@ -1748,6 +1752,9 @@ static void handleRoot() {
 
 static void handleCommand() {
   if (!handleAuthentication()) return;
+  if (server.header("X-Requested-With") != "XMLHttpRequest") {
+    server.send(403,"text/plain","Invalid request"); return;
+  }
   if (server.hasArg("cmd")) {
     String c = server.arg("cmd");
     c.trim();
@@ -1761,22 +1768,25 @@ static void handleCommand() {
 
 static void handleMQTTConfig() {
   if (!handleAuthentication()) return;
+  if (server.header("X-Requested-With") != "XMLHttpRequest") {
+    server.send(403,"text/plain","Invalid request"); return;
+  }
 
   if (server.hasArg("mqtt_en")) deviceConfig.mqttEnable = (uint8_t)server.arg("mqtt_en").toInt();
   if (server.hasArg("server")) server.arg("server").toCharArray(deviceConfig.mqttServer, sizeof(deviceConfig.mqttServer));
   if (server.hasArg("port"))   deviceConfig.mqttPort = (uint16_t)server.arg("port").toInt();
   if (server.hasArg("user"))   server.arg("user").toCharArray(deviceConfig.mqttUser, sizeof(deviceConfig.mqttUser));
-  if (server.hasArg("pass"))   server.arg("pass").toCharArray(deviceConfig.mqttPassword, sizeof(deviceConfig.mqttPassword));
+  if (server.hasArg("pass") && server.arg("pass").length())   server.arg("pass").toCharArray(deviceConfig.mqttPassword, sizeof(deviceConfig.mqttPassword));
   if (server.hasArg("cmdtopic")) server.arg("cmdtopic").toCharArray(deviceConfig.mqttCmdTopic, sizeof(deviceConfig.mqttCmdTopic));
   if (server.hasArg("statetopic")) server.arg("statetopic").toCharArray(deviceConfig.mqttStateTopic, sizeof(deviceConfig.mqttStateTopic));
   if (server.hasArg("hbtopic")) server.arg("hbtopic").toCharArray(deviceConfig.mqttHeartbeatTopic, sizeof(deviceConfig.mqttHeartbeatTopic));
 
   if (server.hasArg("webuser")) server.arg("webuser").toCharArray(deviceConfig.webUser, sizeof(deviceConfig.webUser));
-  if (server.hasArg("webpass")) server.arg("webpass").toCharArray(deviceConfig.webPassword, sizeof(deviceConfig.webPassword));
+  if (server.hasArg("webpass") && server.arg("webpass").length()) server.arg("webpass").toCharArray(deviceConfig.webPassword, sizeof(deviceConfig.webPassword));
 
   // OTA
   if (server.hasArg("ota_en"))   deviceConfig.otaEnable = (uint8_t)server.arg("ota_en").toInt();
-  if (server.hasArg("ota_pass")) server.arg("ota_pass").toCharArray(deviceConfig.otaPassword, sizeof(deviceConfig.otaPassword));
+  if (server.hasArg("ota_pass") && server.arg("ota_pass").length()) server.arg("ota_pass").toCharArray(deviceConfig.otaPassword, sizeof(deviceConfig.otaPassword));
 
   // Device ID
   if (server.hasArg("dev_id_en")) deviceConfig.useCustomId = (uint8_t)server.arg("dev_id_en").toInt();
@@ -1796,7 +1806,7 @@ static void handleMQTTConfig() {
 
   // Telnet
   if (server.hasArg("telnet_en"))   deviceConfig.telnetEnable = (uint8_t)server.arg("telnet_en").toInt();
-  if (server.hasArg("telnet_pass")) server.arg("telnet_pass").toCharArray(deviceConfig.telnetPassword, sizeof(deviceConfig.telnetPassword));
+  if (server.hasArg("telnet_pass") && server.arg("telnet_pass").length()) server.arg("telnet_pass").toCharArray(deviceConfig.telnetPassword, sizeof(deviceConfig.telnetPassword));
 
   saveConfig();
 
@@ -2485,15 +2495,17 @@ void setup() {
   mqttEnabled = deviceConfig.mqttEnable != 0;
   if (mqttEnabled && isMqttHostConfigured()) {
     #if (USE_MQTT_TLS)
-      wifiClientTLS.setInsecure(); // volitelně (vývoj)
-    #endif // volitelně (vývoj)
+      #error "MQTT TLS requires certificate configuration; unverified TLS is disabled."
+    #endif
     configureMqttClient();
   }
 
   // Web
+  const char* customHeaders[] = {"X-Requested-With"};
+  server.collectHeaders(customHeaders, 1);
   server.on("/", handleRoot);
-  server.on("/command", handleCommand);
-  server.on("/mqttconfig", handleMQTTConfig);
+  server.on("/command", HTTP_POST, handleCommand);
+  server.on("/mqttconfig", HTTP_POST, handleMQTTConfig);
   server.on("/debug", handleDebug);
   server.on("/app.css", handleAppCss);
   server.on("/app.js",  handleAppJs);
@@ -2520,13 +2532,13 @@ void setup() {
     doc["server"]  = deviceConfig.mqttServer;
     doc["port"]    = deviceConfig.mqttPort;
     doc["user"]    = deviceConfig.mqttUser;
-    doc["pass"]    = deviceConfig.mqttPassword;
+    doc["pass"]    = "";
     doc["cmdtopic"]= deviceConfig.mqttCmdTopic;
     doc["statetopic"] = deviceConfig.mqttStateTopic;
     doc["hbtopic"] = deviceConfig.mqttHeartbeatTopic;
 
     doc["webuser"] = deviceConfig.webUser;
-    doc["webpass"] = deviceConfig.webPassword;
+    doc["webpass"] = "";
 
     doc["dev_id_en"] = deviceConfig.useCustomId;
     doc["dev_id"]    = deviceConfig.customDeviceId;
@@ -2538,10 +2550,10 @@ void setup() {
     doc["mb_uid"]  = deviceConfig.modbusUnitId; // info
 
     doc["ota_en"]  = deviceConfig.otaEnable;
-    doc["ota_pass"]= deviceConfig.otaPassword;
+    doc["ota_pass"]= "";
 
     doc["telnet_en"]   = deviceConfig.telnetEnable;
-    doc["telnet_pass"] = deviceConfig.telnetPassword;
+    doc["telnet_pass"] = "";
 
     String out; out.reserve(measureJson(doc)+8);
     serializeJson(doc, out);
@@ -2638,7 +2650,7 @@ void setup() {
 }
 
 void loop() {
-  if (deviceConfig.otaEnable) {
+  if (deviceConfig.otaEnable && otaStarted) {
     ArduinoOTA.handle();
   }
 
