@@ -1,3 +1,7 @@
+#ifndef USE_MQTT_TLS
+  #define USE_MQTT_TLS false
+#endif
+
 // ===== Platforma (ESP8266/ESP32): WiFi + WebServer =====
 #if defined(ESP8266)
   #include <ESP8266WiFi.h>
@@ -77,7 +81,7 @@ void HvacRawAnalyzer_onFrame(bool tx, uint8_t cmd, const uint8_t* payload, uint8
     #define RX_PIN       3
     #define TX_PIN       4
     #define FLASH_BTN_PIN 9      // BOOT na C3 bývá GPIO9
-    #define LED_PIN      -1      // většina C3 nemá klasickou LED na GPIO2
+    #define LED_PIN       8      // ESP32-C3 SuperMini built-in active-low LED
   #elif defined(CONFIG_IDF_TARGET_ESP32S2)
     // S2: běžně dostupné piny pro HW serial
     #define RX_PIN       16
@@ -110,7 +114,7 @@ void HvacRawAnalyzer_onFrame(bool tx, uint8_t cmd, const uint8_t* payload, uint8
 #define BTN_DEBOUNCE_MS 30
 #define BTN_SHORT_MIN   50
 #define BTN_SHORT_MAX   2000
-#define USE_MQTT_TLS  false   // true = WiFiClientSecure + 8883; false = WiFiClient + 1883
+// USE_MQTT_TLS is configured before includes.
 #define EEPROM_SIZE  1024
 #define CONFIG_MAGIC 0x42
 #define CONFIG_VER   8   // +Telnet enable/pass; OTA gating; další drobnosti
@@ -322,7 +326,7 @@ enum : uint16_t {
   // >>> NOVÉ TELEMETRIE
   HREG_TIN_X10    = 5,   // int16 (°C*10), 32767 = N/A
   HREG_TOUT_X10   = 6,   // int16 (°C*10), 32767 = N/A
-  HREG_OPER       = 7,   // 0=auto,1=cool,2=heat,3=dry,4=fan_only,5=off
+  HREG_OPER       = 7,   // 0=off,1=auto,2=heat,3=cool,4=dry,5=fan_only
   HREG_FLAGS      = 8,   // bitové příznaky (0 pokud neznámé)
   HREG_ERROR      = 9,   // error code (0xFFFF pokud neznámý)
   HREG_STATUS     = 10,  // bit0=HVAC UART, bit1=MQTT, bit2=WiFi
@@ -676,8 +680,34 @@ static uint16_t fanToReg(const char* f);
 static uint16_t swingToReg(const char* s);
 
 // --- Shadow (požadované) hodnoty pro okamžitý export do Modbusu
-static uint16_t g_reqModeReg = 0;  // 0..4  (auto,cool,heat,dry,fan_only)
-static uint16_t g_reqFanReg  = 0;  // 0..5  (0=auto, 1..5=lvl_1..lvl_5)
+// Pending writes are separate from the confirmed HVAC state.
+struct PendingHreg {
+  uint16_t value = 0;
+  uint32_t startedMs = 0;
+  bool active = false;
+};
+static PendingHreg g_pendingHreg[5];       // HREG_POWER through HREG_SWING
+static const uint32_t MODBUS_CONFIRM_TIMEOUT_MS = 10000UL;
+static void rememberRequestedHreg(uint16_t reg, uint16_t value) {
+  if (reg > HREG_SWING) return;
+  g_pendingHreg[reg].value = value;
+  g_pendingHreg[reg].startedMs = millis();
+  g_pendingHreg[reg].active = true;
+}
+static uint16_t exportedHreg(uint16_t reg, uint16_t actual) {
+  if (reg > HREG_SWING) return actual;
+  PendingHreg &p = g_pendingHreg[reg];
+  if (!p.active) return actual;
+  if (actual == p.value || millis() - p.startedMs >= MODBUS_CONFIRM_TIMEOUT_MS) {
+    p.active = false;
+    return actual;
+  }
+  return p.value;
+}
+static void setHoldingFromHvac(uint16_t reg, uint16_t value) {
+  if (mb.Hreg(reg) != value) mb.Hreg(reg, value);
+  hregCache[reg] = value; // local updates must NOT be interpreted as Modbus writes
+}
 
 static uint32_t computeStateHash() {
   uint32_t h = 2166136261u;
@@ -722,7 +752,8 @@ static void processCommand(const char* cmd) {
     uint8_t v = 1;
     HvacRawAnalyzer_onFrame(true, PSEUDO_CMD_POWER, &v, 1);
     hvac.setState("on");
-    lastHvacResponse = millis();
+    rememberRequestedHreg(HREG_POWER, 1);
+    // Request queued; last valid UART reception is tracked by the HVAC driver.
     bumpRevIfChanged();
     return;
   }
@@ -730,7 +761,8 @@ static void processCommand(const char* cmd) {
     uint8_t v = 0;
     HvacRawAnalyzer_onFrame(true, PSEUDO_CMD_POWER, &v, 1);
     hvac.setState("off");
-    lastHvacResponse = millis();
+    rememberRequestedHreg(HREG_POWER, 0);
+    // Request queued; last valid UART reception is tracked by the HVAC driver.
     bumpRevIfChanged();
     return;
   }
@@ -745,7 +777,8 @@ static void processCommand(const char* cmd) {
     HvacRawAnalyzer_onFrame(true, PSEUDO_CMD_TEMP, &tv, 1);
 
     hvac.setSetpoint((uint8_t)t);
-    lastHvacResponse = millis();
+    rememberRequestedHreg(HREG_SETPOINT, (uint16_t)t);
+    // Request queued; last valid UART reception is tracked by the HVAC driver.
     bumpRevIfChanged();
     return;
   }
@@ -767,8 +800,8 @@ static void processCommand(const char* cmd) {
     HvacRawAnalyzer_onFrame(true, PSEUDO_CMD_MODE, &mv, 1);
 
     hvac.setMode(m);
-    g_reqModeReg = modeToReg(m);
-    lastHvacResponse = millis();
+    rememberRequestedHreg(HREG_MODE, modeToReg(m));
+    // Request queued; last valid UART reception is tracked by the HVAC driver.
     bumpRevIfChanged();
     return;
   }
@@ -784,7 +817,8 @@ static void processCommand(const char* cmd) {
     else if (!strcasecmp(p, "HIGH"))   f = "lvl_5";
     else if (!strcasecmp(p, "TURBO"))  f = "lvl_5";
     else if (p[0]>='1' && p[0]<='5' && p[1]==0) {
-      static char buf[8]; snprintf(buf,sizeof(buf),"lvl_%c",p[0]); f = buf;
+      static const char* const levels[] = {"lvl_1","lvl_2","lvl_3","lvl_4","lvl_5"};
+      f = levels[p[0] - '1'];
     } else {
       Serial.println(F("FAN: nepodporovany alias"));
       return;
@@ -795,8 +829,8 @@ static void processCommand(const char* cmd) {
     HvacRawAnalyzer_onFrame(true, PSEUDO_CMD_FAN, &fv, 1);
 
     hvac.setFanMode(f);
-    g_reqFanReg = fanToReg(f);
-    lastHvacResponse = millis();
+    rememberRequestedHreg(HREG_FAN, fanToReg(f));
+    // Request queued; last valid UART reception is tracked by the HVAC driver.
     bumpRevIfChanged();
     return;
   }
@@ -806,34 +840,41 @@ static void processCommand(const char* cmd) {
     uint8_t v = 0;   // marker pro FIX
     HvacRawAnalyzer_onFrame(true, 163, &v, 1);
     hvac.setSwing("fix");
-    lastHvacResponse = millis(); bumpRevIfChanged(); return;
+    rememberRequestedHreg(HREG_SWING, swingToReg("fix"));
+    // Request queued; last valid UART reception is tracked by the HVAC driver. bumpRevIfChanged(); return;
   }
   if (!strcasecmp(cmd, "SWING_V"))   {
     uint8_t v = 100; // marker pro V-swing
     HvacRawAnalyzer_onFrame(true, 163, &v, 1);
     hvac.setSwing("v_swing");
-    lastHvacResponse = millis(); bumpRevIfChanged(); return;
+    rememberRequestedHreg(HREG_SWING, swingToReg("v_swing"));
+    // Request queued; last valid UART reception is tracked by the HVAC driver. bumpRevIfChanged(); return;
   }
   if (!strcasecmp(cmd, "SWING_H"))   {
     uint8_t v = 101; // marker pro H-swing
     HvacRawAnalyzer_onFrame(true, 163, &v, 1);
     hvac.setSwing("h_swing");
-    lastHvacResponse = millis(); bumpRevIfChanged(); return;
+    rememberRequestedHreg(HREG_SWING, swingToReg("h_swing"));
+    // Request queued; last valid UART reception is tracked by the HVAC driver. bumpRevIfChanged(); return;
   }
   if (!strcasecmp(cmd, "SWING_VH"))  {
     uint8_t v = 102; // marker pro VH-swing
     HvacRawAnalyzer_onFrame(true, 163, &v, 1);
-    hvac.setSwing("vh_swing");
-    lastHvacResponse = millis(); bumpRevIfChanged(); return;
+    hvac.setSwing("hv_swing");
+    rememberRequestedHreg(HREG_SWING, swingToReg("hv_swing"));
+    // Request queued; last valid UART reception is tracked by the HVAC driver. bumpRevIfChanged(); return;
   }
   if (!strncasecmp(cmd, "SWING_FIX_", 10)) {
     const char* p = cmd + 10; // "1".."5"
     if (p[0]>='1' && p[0]<='5' && p[1]==0) {
       uint8_t pos = (uint8_t)(p[0]-'0');            // 1..5
       HvacRawAnalyzer_onFrame(true, 163, &pos, 1);  // TX pro heuristiku
-      char buf[16]; snprintf(buf,sizeof(buf),"fix_pos_%c",p[0]);
-      hvac.setSwing(buf);
-      lastHvacResponse = millis(); bumpRevIfChanged(); return;
+      static const char* const fixed[] = {
+        "fix_pos_1","fix_pos_2","fix_pos_3","fix_pos_4","fix_pos_5"
+      };
+      hvac.setSwing(fixed[pos - 1]);
+      rememberRequestedHreg(HREG_SWING, swingToReg(fixed[pos - 1]));
+      // Request queued; last valid UART reception is tracked by the HVAC driver. bumpRevIfChanged(); return;
     }
     Serial.println(F("SWING: nepodporovany alias"));
     return;
@@ -1085,7 +1126,7 @@ static uint16_t swingToReg(const char* s) {
   if (!strcmp(s,"fix"))        return SWING_CODE_FIX;
   if (!strcmp(s,"v_swing"))    return SWING_CODE_V_SWING;
   if (!strcmp(s,"h_swing"))    return SWING_CODE_H_SWING;
-  if (!strcmp(s,"vh_swing"))   return SWING_CODE_VH_SWING;
+  if (!strcmp(s,"hv_swing") || !strcmp(s,"vh_swing")) return SWING_CODE_VH_SWING;
   if (!strcmp(s,"fix_pos_1"))  return SWING_CODE_FIX_POS_1;
   if (!strcmp(s,"fix_pos_2"))  return SWING_CODE_FIX_POS_2;
   if (!strcmp(s,"fix_pos_3"))  return SWING_CODE_FIX_POS_3;
@@ -1098,7 +1139,7 @@ static const char* regToSwing(uint16_t r) {
   if (r == SWING_CODE_FIX)        return "fix";
   if (r == SWING_CODE_V_SWING)    return "v_swing";
   if (r == SWING_CODE_H_SWING)    return "h_swing";
-  if (r == SWING_CODE_VH_SWING)   return "vh_swing";
+  if (r == SWING_CODE_VH_SWING)   return "hv_swing";
   if (r == SWING_CODE_FIX_POS_1)  return "fix_pos_1";
   if (r == SWING_CODE_FIX_POS_2)  return "fix_pos_2";
   if (r == SWING_CODE_FIX_POS_3)  return "fix_pos_3";
@@ -1121,7 +1162,7 @@ static uint16_t buildStatusReg() {
 // mapování "oper" do registru (včetně OFF)
 static uint16_t operToReg(const char* oper) {
   if (!oper) return 0;
-  if (!strcmp(oper, "off")) return 5;
+  if (!strcmp(oper, "off")) return 0;
   return modeToReg(oper);
 }
 
@@ -1136,124 +1177,74 @@ static int16_t tempToX10_orNA(float tC, bool ok) {
 
 static void modbusSyncFromHVAC() {
   if (!modbusActive) return;
+  const uint16_t power = !strcmp(nz(hvac.getState()), "on") ? 1 : 0;
+  setHoldingFromHvac(HREG_POWER, exportedHreg(HREG_POWER, power));
+  uint16_t setpoint = hvac.getSetpoint();
+  if (setpoint < 17) setpoint = 17;
+  if (setpoint > 30) setpoint = 30;
+  setHoldingFromHvac(HREG_SETPOINT, exportedHreg(HREG_SETPOINT, setpoint));
+  setHoldingFromHvac(HREG_MODE, exportedHreg(HREG_MODE, modeToReg(hvac.getMode())));
+  setHoldingFromHvac(HREG_FAN, exportedHreg(HREG_FAN, fanToReg(hvac.getFanMode())));
+  setHoldingFromHvac(HREG_SWING, exportedHreg(HREG_SWING, swingToReg(hvac.getSwing())));
 
-  // POWER
-  uint16_t pwr = (!strcmp(nz(hvac.getState()), "on")) ? 1 : 0;
-  if (mb.Hreg(HREG_POWER) != pwr) mb.Hreg(HREG_POWER, pwr);
-
-  // SETPOINT
-  uint16_t sp = (uint16_t)hvac.getSetpoint();
-  if (sp < 17) sp = 17; if (sp > 30) sp = 30;
-  if (mb.Hreg(HREG_SETPOINT) != sp) mb.Hreg(HREG_SETPOINT, sp);
-
-  // MODE – preferuj požadovanou (shadow) hodnotu
-  uint16_t mdCur  = modeToReg(nz(hvac.getMode()));
-  if (g_reqModeReg != mdCur && g_reqModeReg <= 4) {
-    // čekáme na potvrzení z jednotky – do Modbusu držíme požadavek
-    if (mb.Hreg(HREG_MODE) != g_reqModeReg) mb.Hreg(HREG_MODE, g_reqModeReg);
-  } else {
-    // potvrzeno nebo bez požadavku
-    if (mb.Hreg(HREG_MODE) != mdCur) mb.Hreg(HREG_MODE, mdCur);
-  }
-
-  // FAN – analogicky (0..5)
-  uint16_t fnCur = fanToReg(nz(hvac.getFanMode()));
-  if (g_reqFanReg != fnCur && isValidFanCode(g_reqFanReg)) {
-    if (mb.Hreg(HREG_FAN) != g_reqFanReg) mb.Hreg(HREG_FAN, g_reqFanReg);
-    } else {
-    if (mb.Hreg(HREG_FAN) != fnCur) mb.Hreg(HREG_FAN, fnCur);
-  }
-
-  // SWING
-  uint16_t sw = swingToReg(nz(hvac.getSwing()));
-  if (mb.Hreg(HREG_SWING) != sw) mb.Hreg(HREG_SWING, sw);
-
-  // OPER (H7)
-  const char* oper = hvacOperatingState();
-  uint16_t opr = operToReg(oper);
-  if (mb.Hreg(HREG_OPER) != opr) mb.Hreg(HREG_OPER, opr);
-
-  // TEPLOTY (H5/H6)
-  float tin = NAN, tout = NAN;
-  bool okTin  = hvacReadRoomTemp(tin);
-  bool okTout = hvacReadOutdoorTemp(tout);
-  int16_t tin_x10  = tempToX10_orNA(tin,  okTin);
-  int16_t tout_x10 = tempToX10_orNA(tout, okTout);
-  if ((int16_t)mb.Hreg(HREG_TIN_X10)  != tin_x10)  mb.Hreg(HREG_TIN_X10,  (uint16_t)tin_x10);
-  if ((int16_t)mb.Hreg(HREG_TOUT_X10) != tout_x10) mb.Hreg(HREG_TOUT_X10, (uint16_t)tout_x10);
-
-  // FLAGS / ERROR
-  uint16_t flags = hvacReadFlags();
-  uint16_t err   = hvacReadErrorCode();
-  if (mb.Hreg(HREG_FLAGS) != flags) mb.Hreg(HREG_FLAGS, flags);
-  if (mb.Hreg(HREG_ERROR) != err)   mb.Hreg(HREG_ERROR, err);
-
-  // STATUS + UPTIME
-  mb.Hreg(HREG_STATUS,   buildStatusReg());
-  mb.Hreg(HREG_UPTIME_S, (uint16_t)((millis()/1000UL) & 0xFFFF));
+  setHoldingFromHvac(HREG_OPER, operToReg(hvacOperatingState()));
+  float tin=NAN, tout=NAN;
+  const bool tinOk=hvacReadRoomTemp(tin), toutOk=hvacReadOutdoorTemp(tout);
+  const int16_t in = tempToX10_orNA(tin, tinOk);
+  const int16_t out = tempToX10_orNA(tout, toutOk);
+  setHoldingFromHvac(HREG_TIN_X10, static_cast<uint16_t>(in));
+  setHoldingFromHvac(HREG_TOUT_X10, static_cast<uint16_t>(out));
+  setHoldingFromHvac(HREG_FLAGS, hvacReadFlags());
+  setHoldingFromHvac(HREG_ERROR, hvacReadErrorCode());
+  setHoldingFromHvac(HREG_STATUS, buildStatusReg());
+  setHoldingFromHvac(HREG_UPTIME_S, (uint16_t)((millis()/1000UL) & 0xFFFF));
 }
 
 static void modbusApplyWrites() {
   if (!modbusActive) return;
-
-  bool changed = false;
-
   uint16_t v = mb.Hreg(HREG_POWER);
   if (v != hregCache[HREG_POWER]) {
-    hvac.setState(v ? "on" : "off");
-    hregCache[HREG_POWER] = v;
-    lastHvacResponse = millis();
-    changed = true;
+    if (v <= 1) {
+      hvac.setState(v ? "on" : "off");
+      rememberRequestedHreg(HREG_POWER, v);
+      hregCache[HREG_POWER] = v;
+    } else mb.Hreg(HREG_POWER, hregCache[HREG_POWER]);
   }
 
   v = mb.Hreg(HREG_SETPOINT);
-  if (v < 17) v = 17; if (v > 30) v = 30;
   if (v != hregCache[HREG_SETPOINT]) {
-    hvac.setSetpoint((uint8_t)v);
-    hregCache[HREG_SETPOINT] = v;
-    lastHvacResponse = millis();
-    changed = true;
+    if (v >= 17 && v <= 30) {
+      hvac.setSetpoint((uint8_t)v);
+      rememberRequestedHreg(HREG_SETPOINT, v);
+      hregCache[HREG_SETPOINT] = v;
+    } else mb.Hreg(HREG_SETPOINT, hregCache[HREG_SETPOINT]);
   }
 
   v = mb.Hreg(HREG_MODE);
-  if (!isValidModeCode(v)) {
-    // Pokud někdo zapíše mimo mapu, vrať na výchozí (třeba AUTO)
-    v = MODE_CODE_AUTO;
-  }
   if (v != hregCache[HREG_MODE]) {
-    hvac.setMode(regToMode(v));
-    g_reqModeReg = v;
-    hregCache[HREG_MODE] = v;
-    lastHvacResponse = millis();
-    changed = true;
+    if (isValidModeCode(v)) {
+      hvac.setMode(regToMode(v));
+      rememberRequestedHreg(HREG_MODE, v);
+      hregCache[HREG_MODE] = v;
+    } else mb.Hreg(HREG_MODE, hregCache[HREG_MODE]);
   }
 
   v = mb.Hreg(HREG_FAN);
-  if (!isValidFanCode(v)) {
-    v = FAN_CODE_AUTO; // mimo mapu -> bezpečně na AUTO
-  }
   if (v != hregCache[HREG_FAN]) {
-    hvac.setFanMode(regToFan(v));
-    g_reqFanReg = v;
-    hregCache[HREG_FAN] = v;
-    lastHvacResponse = millis();
-    changed = true;
+    if (isValidFanCode(v)) {
+      hvac.setFanMode(regToFan(v));
+      rememberRequestedHreg(HREG_FAN, v);
+      hregCache[HREG_FAN] = v;
+    } else mb.Hreg(HREG_FAN, hregCache[HREG_FAN]);
   }
 
   v = mb.Hreg(HREG_SWING);
-  if (!isValidSwingCode(v)) {
-    v = SWING_CODE_FIX;  // mimo mapu -> bezpečně na FIX
-  }
   if (v != hregCache[HREG_SWING]) {
-    hvac.setSwing(regToSwing(v));
-    hregCache[HREG_SWING] = v;
-    lastHvacResponse = millis();
-    changed = true;
-  }
-
-  if (changed) {
-    bumpRevIfChanged();
-    modbusSyncFromHVAC();   // <<< přidej
+    if (isValidSwingCode(v)) {
+      hvac.setSwing(regToSwing(v));
+      rememberRequestedHreg(HREG_SWING, v);
+      hregCache[HREG_SWING] = v;
+    } else mb.Hreg(HREG_SWING, hregCache[HREG_SWING]);
   }
 }
 
@@ -1266,6 +1257,7 @@ static void modbusSetup() {
   for (uint16_t r = 0; r < HREG__COUNT; ++r) {
     mb.addHreg(r, 0);
   }
+  modbusActive = true;
   modbusSyncFromHVAC();
   for (uint16_t r = 0; r < HREG__COUNT; ++r) {
     hregCache[r] = mb.Hreg(r);
@@ -1984,8 +1976,8 @@ static void handleTelnet() {
         //telnetClient.printf(" last_ms="); dbg += g_lastRawMs; dbg += F("\n");
       } else if (!strcasecmp(line, "test_led")) {
         for (int i = 0; i < 3; ++i) {
-          digitalWrite(LED_PIN, LOW); delay(150);
-          digitalWrite(LED_PIN, HIGH); delay(150);
+          if (LED_PIN >= 0) { digitalWrite(LED_PIN, LOW); delay(150);
+          digitalWrite(LED_PIN, HIGH); delay(150); }
         }
         telnetClient.println(F("OK"));
 
@@ -2334,8 +2326,10 @@ static void handleFactoryResetPost() {
 // ================== Setup/Loop ==================
 void setup() {
   // LEDy
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH); // zhasnuto (active LOW)
+  if (LED_PIN >= 0) {
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, HIGH); // active LOW
+  }
   pinMode(FLASH_BTN_PIN, INPUT_PULLUP);
 
   if (RED_LED_PIN >= 0) {
@@ -2701,8 +2695,8 @@ void loop() {
   }
 
   // LED diagnostika (LOW = svítí); mimo OTA fade
-  if (!otaActive) {
-    bool hvacConn = (now - lastHvacResponse) < HVAC_TIMEOUT_MS;
+  if (!otaActive && LED_PIN >= 0) {
+    bool hvacConn = hvac.isConnected() && (now - hvac.getLastValidFrameMs()) < HVAC_TIMEOUT_MS;
     if (!mqttEnabled) {
       digitalWrite(LED_PIN, (now / 500) % 2 ? LOW : HIGH);         // pomalé blikání
     } else if (!mqttClient.connected()) {
