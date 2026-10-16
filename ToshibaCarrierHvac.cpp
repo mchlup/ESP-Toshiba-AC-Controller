@@ -67,7 +67,6 @@ void ToshibaCarrierHvac::sendPacket(byte data[], size_t dataLen) {
     _sendWake = true;
     #ifdef HVAC_DEBUG
     DEBUG_PORT.print(F("HVAC> Sending data-> "));
-    char temp[dataLen];
     for (uint8_t i=0; i<dataLen; i++) {
         DEBUG_PORT.print(data[i]);
         DEBUG_PORT.print(" ");
@@ -82,7 +81,6 @@ void ToshibaCarrierHvac::sendPacket(const byte data[], size_t dataLen) {
     _sendWake = true;
     #ifdef HVAC_DEBUG
     DEBUG_PORT.print(F("HVAC> Sending data-> "));
-    char temp[dataLen];
     for (uint8_t i=0; i<dataLen; i++) {
         DEBUG_PORT.print(data[i]);
         DEBUG_PORT.print(" ");
@@ -176,32 +174,37 @@ bool ToshibaCarrierHvac::createPacket(const byte header[], size_t headerLen, byt
 }
 
 void ToshibaCarrierHvac::sendHandshake(void) {
-    if (_connected) return;
-    const uint32_t now = millis();
-    if ((int32_t)(now - _nextHandshakeMs) < 0) return;
-    if (_handshake && !_ready) {
-        if (_ackStep == 0) {
-            sendPacket(HANDSHAKE_ACK_PACKET_1, sizeof(HANDSHAKE_ACK_PACKET_1));
-            _ackStep = 1;
-            _nextHandshakeMs = now + 200;
-        } else {
-            sendPacket(HANDSHAKE_ACK_PACKET_2, sizeof(HANDSHAKE_ACK_PACKET_2));
-            _ackStep = 0;
-            _handshake = false;
-            _ready = true;
-            _nextHandshakeMs = now + 100;
-        }
-        return;
-    }
-    const byte* const handshakeFrames[] = {
-        HANDSHAKE_SYN_PACKET_1, HANDSHAKE_SYN_PACKET_2, HANDSHAKE_SYN_PACKET_3,
-        HANDSHAKE_SYN_PACKET_4, HANDSHAKE_SYN_PACKET_5, HANDSHAKE_SYN_PACKET_6
-    };
-    const size_t lengths[] = {8, 9, 10, 10, 10, 8};
-    if (!_ready && !_handshake && _handshakeStep < 6) {
-        sendPacket(handshakeFrames[_handshakeStep], lengths[_handshakeStep]);
-        ++_handshakeStep;
-        _nextHandshakeMs = now + 200;
+    if (_firstRun && !_connected) {
+        ++_handshakeAttempts;
+        // Restore the six SYN telegrams and the original 200ms spacing.
+        sendPacket(HANDSHAKE_SYN_PACKET_1, sizeof(HANDSHAKE_SYN_PACKET_1));
+        delay(200);
+        sendPacket(HANDSHAKE_SYN_PACKET_2, sizeof(HANDSHAKE_SYN_PACKET_2));
+        delay(200);
+        sendPacket(HANDSHAKE_SYN_PACKET_3, sizeof(HANDSHAKE_SYN_PACKET_3));
+        delay(200);
+        sendPacket(HANDSHAKE_SYN_PACKET_4, sizeof(HANDSHAKE_SYN_PACKET_4));
+        delay(200);
+        sendPacket(HANDSHAKE_SYN_PACKET_5, sizeof(HANDSHAKE_SYN_PACKET_5));
+        delay(200);
+        sendPacket(HANDSHAKE_SYN_PACKET_6, sizeof(HANDSHAKE_SYN_PACKET_6));
+        delay(200);
+        _sendWake = true;
+        _lastSendWake = millis();
+        #ifdef HVAC_DEBUG
+        DEBUG_PORT.println(F("HVAC> Handshake sent; waiting for SYN/ACK"));
+        #endif
+    } else if (_handshake && !_connected && !_ready) {
+        sendPacket(HANDSHAKE_ACK_PACKET_1, sizeof(HANDSHAKE_ACK_PACKET_1));
+        delay(200);
+        sendPacket(HANDSHAKE_ACK_PACKET_2, sizeof(HANDSHAKE_ACK_PACKET_2));
+        delay(100);
+        #ifdef HVAC_DEBUG
+        DEBUG_PORT.println(F("HVAC> ACK sent; waiting for READY"));
+        #endif
+        _handshake = false;
+        _ready = _sendWake = true;
+        _lastSendWake = millis();
     }
 }
 
@@ -452,7 +455,6 @@ bool ToshibaCarrierHvac::processData(byte data[], size_t dataLen) {
                 #endif
                 if (!_connected) {
                     _connected = true;
-                    _connectedSinceMs = millis();
                     _ready = _handshake = false;
                 }
                 return true;
@@ -1063,7 +1065,6 @@ bool ToshibaCarrierHvac::readPacket(byte data[], size_t dataLen) {
         #endif
         _ready = _handshake = false;
         _connected = true;
-        _connectedSinceMs = millis();
         return true;
     } else {   // unknown
         #ifdef HVAC_DEBUG
@@ -1090,78 +1091,79 @@ bool ToshibaCarrierHvac::chunkSplit(byte data[], size_t dataLen) {
     size_t pos = 0;
     bool processed = false;
     while (pos + 8 <= dataLen) {
-        if (data[pos] != 2 || data[pos+1] != 0 ||
-            (data[pos+2] != 0 && data[pos+2] != 2 && data[pos+2] != 3)) {
+        // 02 00 00, 02 00 01, 02 00 02 and 02 00 03 are
+        // known variants of the protocol header.
+        if (data[pos] != 2 || data[pos+1] != 0 || data[pos+2] > 3) {
             ++pos;
             continue;
         }
-        const size_t length = static_cast<size_t>(data[pos+6]) + 8;
-        if (length < 8 || length > 32) { ++pos; continue; }
-        if (pos + length > dataLen) break;
-        processed = readPacket(data + pos, length) || processed;
-        pos += length;
+        size_t len = static_cast<size_t>(data[pos+6]) + 8;
+        if (len < 8 || len > MAX_RX_BYTE_READ) {
+            ++pos;
+            continue;
+        }
+        if (len > dataLen - pos) break;
+        bool accepted = readPacket(data + pos, len);
+        processed = accepted || processed;
+        pos += len;
+        yield();
     }
     return processed;
-}
+
 
 bool ToshibaCarrierHvac::packetMonitor(void) {
-    if (_uartRxLength && millis() - _uartRxLastByteMs > RX_READ_TIMEOUT) {
-        _uartRxLength = 0;
-        ++_invalidPackets;
-    }
-    uint8_t budget = 64;
-    while (budget-- && _serial->available()) {
-        int value = _serial->read();
-        if (value < 0) break;
-        if (_uartRxLength == UART_RX_CAPACITY) {
-            _uartRxLength = 0;
-            ++_invalidPackets;
+    if (!_serial || !_serial->available()) return false;
+    byte rxBuffer[MAX_RX_BYTE_READ];
+    size_t dataLen = 0;
+    uint32_t start = millis();
+    // The original Toshiba protocol collector waits up to 250ms for the
+    // remaining bytes. This handles frames even when the main loop is busy.
+    while ((millis() - start) < RX_READ_TIMEOUT && dataLen < sizeof(rxBuffer)) {
+        if (_serial->available()) {
+            int value = _serial->read();
+            if (value >= 0) rxBuffer[dataLen++] = static_cast<byte>(value);
+        } else {
+            yield();
         }
-        _uartRx[_uartRxLength++] = static_cast<byte>(value);
-        _uartRxLastByteMs = millis();
     }
-    bool processed = false;
-    uint8_t frames = 0;
-    while (_uartRxLength >= 8 && frames < 16) {
-        if (_uartRx[0] != 2 || _uartRx[1] != 0 ||
-            (_uartRx[2] != 0 && _uartRx[2] != 2 && _uartRx[2] != 3)) {
-            memmove(_uartRx, _uartRx + 1, --_uartRxLength);
-            ++_invalidPackets;
-            continue;
-        }
-        const size_t length = static_cast<size_t>(_uartRx[6]) + 8;
-        if (length < 8 || length > 32) {
-            memmove(_uartRx, _uartRx + 1, --_uartRxLength);
-            ++_invalidPackets;
-            continue;
-        }
-        if (_uartRxLength < length) break;
-        const bool accepted = readPacket(_uartRx, length);
-        processed = processed || accepted;
-        if (accepted) {
-            ++_validPackets;
-            _lastReceive = millis();
-            _sendWake = false; // a valid response completes the outstanding probe
-        } else ++_invalidPackets;
-        _uartRxLength -= length;
-        if (_uartRxLength)
-            memmove(_uartRx, _uartRx + length, _uartRxLength);
-        ++frames;
-    }
-    return processed;
+    if (!dataLen) return false;
+    #ifdef HVAC_DEBUG
+    DEBUG_PORT.print(F("HVAC> Received bytes: "));
+    DEBUG_PORT.println(dataLen);
+    #endif
+    _lastReceive = millis();
+    _sendWake = !_connected;
+    bool simpleFrame = (dataLen == 15 || dataLen == 17)
+        && findHeader(rxBuffer, dataLen, PACKET_HEADER, sizeof(PACKET_HEADER));
+    bool accepted = simpleFrame ? readPacket(rxBuffer, dataLen) : chunkSplit(rxBuffer, dataLen);
+    if (accepted) {
+        ++_validPackets;
+        _lastValidFrameMs = millis();
+    } else ++_invalidPackets;
+    return accepted;
 }
 
 void ToshibaCarrierHvac::queryall(void) {
-    _queryMode = 1;
-    _queryStep = 0;
-    _nextQueryMs = millis();
+    // Toshiba bus: one query at a time, then collect its complete reply.
+    const byte fn[11] = {128,135,144,148,163,187,190,199,222,223,248};
+    for (uint8_t i=0; i<11; ++i) {
+        byte data[1] = {fn[i]};
+        createPacket(PACKET_HEADER, sizeof(PACKET_HEADER), 16, data, 1);
+        delay(200);
+        packetMonitor();
+        yield();
+    }
 }
 
 void ToshibaCarrierHvac::queryTemperature(void) {
-    if (_queryMode) return;
-    _queryMode = 2;
-    _queryStep = 0;
-    _nextQueryMs = millis();
+    const byte fn[2] = {187,190};
+    for (uint8_t i=0; i<2; ++i) {
+        byte data[1] = {fn[i]};
+        createPacket(PACKET_HEADER, sizeof(PACKET_HEADER), 16, data, 1);
+        delay(200);
+        packetMonitor();
+        yield();
+    }
 }
 
 void ToshibaCarrierHvac::handleHvac(void) {
@@ -1177,25 +1179,12 @@ void ToshibaCarrierHvac::handleHvac(void) {
     }
 
     // query all data once after connected
-    if (((millis() - _connectedSinceMs) >= _queryallDelay) && !_init && _connected) {
+    if (((millis() - _lastReceive) >= _queryallDelay) && !_init && _connected) {
         queryall();
         _init = true;
     }
 
-    packetMonitor(); // nonblocking incremental RX
-
-    if (_queryMode && (int32_t)(millis() - _nextQueryMs) >= 0) {
-        const byte all[] = {128, 135, 144, 148, 163, 187, 190, 199, 222, 223, 248};
-        const byte temps[] = {187, 190};
-        const bool full = (_queryMode == 1);
-        byte request[1] = {full ? all[_queryStep] : temps[_queryStep]};
-        createPacket(PACKET_HEADER, sizeof(PACKET_HEADER), 16, request, sizeof(request));
-        if (++_queryStep >= (full ? sizeof(all) : sizeof(temps))) {
-            _queryMode = 0;
-        } else {
-            _nextQueryMs = millis() + 200;
-        }
-    }
+    packetMonitor(); // original time-bounded RX
 
     // idle timeout
     if (((millis() - _lastReceive) >= _idleTimeout) && !_sendWake && _init) {
@@ -1215,9 +1204,6 @@ void ToshibaCarrierHvac::handleHvac(void) {
         #endif
         _firstRun = true;
         _handshake = _ready = _connected = _sendWake = _init = false;
-        _queryMode = _queryStep = _handshakeStep = _ackStep = 0;
-        _nextHandshakeMs = 0;
-        _uartRxLength = 0;
         _lastReceive = _lastSendWake = millis();
     }
 
@@ -1373,7 +1359,6 @@ bool ToshibaCarrierHvac::isConnected(void) {
 
 void ToshibaCarrierHvac::forceQueryAllData(void) {
     _init = false;
-    _connectedSinceMs = millis() - _queryallDelay;
 }
 
 const char* ToshibaCarrierHvac::getSwingRaw() const {
