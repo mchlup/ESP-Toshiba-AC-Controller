@@ -1138,8 +1138,11 @@ bool ToshibaCarrierHvac::packetMonitor(void) {
         if (_uartRxLength < length) break;
         const bool accepted = readPacket(_uartRx, length);
         processed = processed || accepted;
-        if (accepted) ++_validPackets;
-        else ++_invalidPackets;
+        if (accepted) {
+            ++_validPackets;
+            _lastReceive = millis();
+            _sendWake = false; // a valid response completes the outstanding probe
+        } else ++_invalidPackets;
         _uartRxLength -= length;
         if (_uartRxLength)
             memmove(_uartRx, _uartRx + length, _uartRxLength);
