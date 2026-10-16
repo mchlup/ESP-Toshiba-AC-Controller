@@ -2514,8 +2514,12 @@ void setup() {
   }
 
   // Web
+#if defined(ESP8266)
+  server.collectHeaders("X-Requested-With");
+#else
   const char* customHeaders[] = {"X-Requested-With"};
   server.collectHeaders(customHeaders, 1);
+#endif
   server.on("/", handleRoot);
   server.on("/command", HTTP_POST, handleCommand);
   server.on("/mqttconfig", HTTP_POST, handleMQTTConfig);
