@@ -98,17 +98,9 @@ class ToshibaCarrierHvac {
         hvacSettings wantedSettings {"UNKNOWN", 0, "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN"}; // set data to prevent strcasecmp crash
         hvacSettings userSettings {"UNKNOWN", 0, "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN", "UNKNOWN"};   // set data to prevent strcasecmp crash
         hvacStatus currentStatus {INT8_MIN, INT8_MIN, "UNKNOWN", "UNKNOWN", false};
-        static constexpr size_t UART_RX_CAPACITY = 250;
-        byte _uartRx[UART_RX_CAPACITY] {};
-        size_t _uartRxLength = 0;
-        uint32_t _uartRxLastByteMs = 0;
-        uint8_t _handshakeStep = 0;
-        uint8_t _ackStep = 0;
-        uint32_t _nextHandshakeMs = 0;
-        uint32_t _connectedSinceMs = 0;
-        uint8_t _queryMode = 0;   // 0 none, 1 query-all, 2 temperatures
-        uint8_t _queryStep = 0;
-        uint32_t _nextQueryMs = 0;
+        // The original serial collector does not require a second RX buffer.
+        uint32_t _lastValidFrameMs = 0;
+        uint32_t _handshakeAttempts = 0;
         uint32_t _invalidPackets = 0;
         uint32_t _validPackets = 0;
 
@@ -223,7 +215,8 @@ class ToshibaCarrierHvac {
         const char* getWifiLed(void);
         bool isCduRunning(void);
         bool isConnected(void);
-        uint32_t lastValidRxMs() const { return _lastReceive; }
+        uint32_t lastValidRxMs() const { return _lastValidFrameMs; }
+        uint32_t handshakeAttempts() const { return _handshakeAttempts; }
         uint32_t validPackets() const { return _validPackets; }
         uint32_t invalidPackets() const { return _invalidPackets; }
         void forceQueryAllData(void);
