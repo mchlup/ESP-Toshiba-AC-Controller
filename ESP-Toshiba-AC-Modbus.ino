@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #ifndef USE_MQTT_TLS
   #define USE_MQTT_TLS false
 #endif
