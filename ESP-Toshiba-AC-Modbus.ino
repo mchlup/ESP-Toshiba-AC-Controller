@@ -976,7 +976,7 @@ static void publishState() {
   doc["swing"] = nz(hvac.getSwing());
 
   // UART/komunikace s jednotkou
-  doc["hvac"]  = (hvac.isConnected() || hvac.isCduRunning()) ? "Active" : "Inactive";
+  doc["hvac"]  = hvac.isConnected() ? "Active" : "Inactive";
 
   // doplněná telemetrie
   doc["oper"]  = hvacOperatingState();   // off/auto/cool/heat/dry/fan_only
@@ -1151,7 +1151,7 @@ static const char* regToSwing(uint16_t r) {
 static uint16_t buildStatusReg() {
   uint16_t s = 0;
   // bit0 = HVAC UART linka / běžící CDU (dle knihovny)
-  if (hvac.isConnected() || hvac.isCduRunning()) s |= (1 << 0);
+  if (hvac.isConnected()) s |= (1 << 0);
   // bit1 = MQTT připojeno
   if (mqttEnabled && mqttClient.connected()) s |= (1 << 1);
   // bit2 = Wi-Fi připojeno
@@ -2570,7 +2570,7 @@ void setup() {
     doc["swing"] = nz(hvac.getSwing());
 
     // UART/komunikace s jednotkou
-    doc["hvac"]  = (hvac.isConnected() || hvac.isCduRunning()) ? "Active" : "Inactive";
+    doc["hvac"]  = hvac.isConnected() ? "Active" : "Inactive";
     doc["oper"]  = hvacOperatingState();
     float tin, tout;
     if (hvacReadRoomTemp(tin)  && !isnan(tin))  doc["t_in"]  = tin;
@@ -2708,7 +2708,7 @@ void loop() {
 
   // LED diagnostika (LOW = svítí); mimo OTA fade
   if (!otaActive && LED_PIN >= 0) {
-    bool hvacConn = hvac.isConnected() && (now - hvac.getLastValidFrameMs()) < HVAC_TIMEOUT_MS;
+    bool hvacConn = hvac.isConnected() && (now - hvac.lastValidRxMs()) < HVAC_TIMEOUT_MS;
     if (!mqttEnabled) {
       digitalWrite(LED_PIN, (now / 500) % 2 ? LOW : HIGH);         // pomalé blikání
     } else if (!mqttClient.connected()) {
