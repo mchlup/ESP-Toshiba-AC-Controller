@@ -54,17 +54,8 @@ struct DeviceConfig;
 
 // Minimalní implicitní implementace „raw“ hooku, aby nepadal linker.
 // Můžeš si z toho udělat logger – níže je ukázka s volitelným výpisem.
-void HvacRawAnalyzer_onFrame(bool tx, uint8_t cmd, const uint8_t* payload, uint8_t plen) {
-  // Odkomentuj, chceš-li logovat
-  /*
-  Serial.print(tx ? F("TX ") : F("RX "));
-  Serial.print(F("CMD=")); Serial.print(cmd);
-  Serial.print(F(" PLEN=")); Serial.print(plen);
-  Serial.print(F(" PAYLOAD:"));
-  for (uint8_t i = 0; i < plen; i++) { Serial.print(' '); Serial.print(payload[i]); }
-  Serial.println();
-  */
-}
+// Defined after diagnostics storage (no dynamic allocation).
+void HvacRawAnalyzer_onFrame(bool tx, uint8_t cmd, const uint8_t* payload, uint8_t plen);
 
 // ================== HW & BUILD CONFIG ==================
 #if defined(ESP8266)
@@ -571,6 +562,28 @@ static void HvacRawAnalyzer_reset() {
 static void HvacRawAnalyzer_enable(bool en){ g_sniffEnabled = en; }
 static volatile uint32_t g_rxFrames = 0, g_txFrames = 0;
 static volatile uint32_t g_lastRawMs = 0;
+void HvacRawAnalyzer_onFrame(bool tx, uint8_t cmd, const uint8_t* payload, uint8_t plen) {
+  if (!g_sniffEnabled) return;
+  RawEvt &e = g_rawRing[g_rawHead % RAW_RING_MAX];
+  e.ts_ms = millis();
+  e.tx = tx;
+  e.cmd = cmd;
+  e.len = (plen > sizeof(e.data)) ? sizeof(e.data) : plen;
+  memset(e.data, 0, sizeof(e.data));
+  if (payload && e.len) memcpy(e.data, payload, e.len);
+  g_rawHead = (g_rawHead + 1) % RAW_RING_MAX;
+  g_lastRawMs = e.ts_ms;
+  if (tx) ++g_txFrames; else ++g_rxFrames;
+  const int idx = _findStats(cmd);
+  if (idx >= 0) {
+    ++g_cmdStats[idx].seen;
+    if (payload && plen) {
+      const uint8_t bin = payload[0] & 63;
+      ++g_cmdStats[idx].vcount[bin];
+    }
+  }
+}
+
 
 // --- Výstupní struktura pro odhad fix pozic (1..5) z RX armatur (cmd=163)
 struct SwingFixMap {
