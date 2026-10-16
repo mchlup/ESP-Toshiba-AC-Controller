@@ -751,8 +751,8 @@ static void bumpRevIfChanged() {
 
 // ================== HVAC command parsing ==================
 // ================== HVAC command parsing ==================
-static void processCommand(const char* cmd) {
-  if (!cmd || !*cmd) return;
+static bool processCommand(const char* cmd) {
+  if (!cmd || !*cmd) return false;
 
   // Pseudo-kódy pro TX logování (drž je unikátní mimo reálné cmd)
   static const uint8_t PSEUDO_CMD_POWER = 200;
@@ -769,7 +769,7 @@ static void processCommand(const char* cmd) {
     rememberRequestedHreg(HREG_POWER, 1);
     // Request queued; last valid UART reception is tracked by the HVAC driver.
     bumpRevIfChanged();
-    return;
+    return true;
   }
   if (!strcasecmp(cmd, "STATE_OFF")) {
     uint8_t v = 0;
@@ -778,14 +778,17 @@ static void processCommand(const char* cmd) {
     rememberRequestedHreg(HREG_POWER, 0);
     // Request queued; last valid UART reception is tracked by the HVAC driver.
     bumpRevIfChanged();
-    return;
+    return true;
   }
 
   // TEMP_xx (17..30)
   if (!strncasecmp(cmd, "TEMP_", 5)) {
-    int t = atoi(cmd + 5);
-    if (t < 17) t = 17;
-    if (t > 30) t = 30;
+    char* end = nullptr;
+    const long t = strtol(cmd + 5, &end, 10);
+    if (end == cmd + 5 || !end || *end != '\0' || t < 17 || t > 30) {
+      Serial.println(F("TEMP: expected integer 17..30"));
+      return false;
+    }
     // TX log (payload = cílová teplota)
     uint8_t tv = (uint8_t)t;
     HvacRawAnalyzer_onFrame(true, PSEUDO_CMD_TEMP, &tv, 1);
@@ -794,7 +797,7 @@ static void processCommand(const char* cmd) {
     rememberRequestedHreg(HREG_SETPOINT, (uint16_t)t);
     // Request queued; last valid UART reception is tracked by the HVAC driver.
     bumpRevIfChanged();
-    return;
+    return true;
   }
 
   // MODE_xxx
@@ -807,7 +810,7 @@ static void processCommand(const char* cmd) {
     else if (!strcasecmp(p, "DRY"))      m = "dry";
     else if (!strcasecmp(p, "FAN"))      m = "fan_only";
     else if (!strcasecmp(p, "FAN_ONLY")) m = "fan_only";
-    else { Serial.println(F("MODE: nepodporovany alias")); return; }
+    else { Serial.println(F("MODE: nepodporovany alias")); return false; }
 
     // TX log (payload = náš mapovaný kód režimu)
     uint8_t mv = (uint8_t)modeToReg(m);
@@ -817,7 +820,7 @@ static void processCommand(const char* cmd) {
     rememberRequestedHreg(HREG_MODE, modeToReg(m));
     // Request queued; last valid UART reception is tracked by the HVAC driver.
     bumpRevIfChanged();
-    return;
+    return true;
   }
 
   // FAN_xxx (0=auto, 1..5)
@@ -835,7 +838,7 @@ static void processCommand(const char* cmd) {
       f = levels[p[0] - '1'];
     } else {
       Serial.println(F("FAN: nepodporovany alias"));
-      return;
+      return false;
     }
 
     // TX log (payload = náš mapovaný kód ventilátoru)
@@ -846,7 +849,7 @@ static void processCommand(const char* cmd) {
     rememberRequestedHreg(HREG_FAN, fanToReg(f));
     // Request queued; last valid UART reception is tracked by the HVAC driver.
     bumpRevIfChanged();
-    return;
+    return true;
   }
 
   // SWING (reálný cmd=163 – logujeme TX; RX hook případně pasivně/snifferem)
@@ -855,28 +858,32 @@ static void processCommand(const char* cmd) {
     HvacRawAnalyzer_onFrame(true, 163, &v, 1);
     hvac.setSwing("fix");
     rememberRequestedHreg(HREG_SWING, swingToReg("fix"));
-    // Request queued; last valid UART reception is tracked by the HVAC driver. bumpRevIfChanged(); return;
+    bumpRevIfChanged();
+    return true;
   }
   if (!strcasecmp(cmd, "SWING_V"))   {
     uint8_t v = 100; // marker pro V-swing
     HvacRawAnalyzer_onFrame(true, 163, &v, 1);
     hvac.setSwing("v_swing");
     rememberRequestedHreg(HREG_SWING, swingToReg("v_swing"));
-    // Request queued; last valid UART reception is tracked by the HVAC driver. bumpRevIfChanged(); return;
+    bumpRevIfChanged();
+    return true;
   }
   if (!strcasecmp(cmd, "SWING_H"))   {
     uint8_t v = 101; // marker pro H-swing
     HvacRawAnalyzer_onFrame(true, 163, &v, 1);
     hvac.setSwing("h_swing");
     rememberRequestedHreg(HREG_SWING, swingToReg("h_swing"));
-    // Request queued; last valid UART reception is tracked by the HVAC driver. bumpRevIfChanged(); return;
+    bumpRevIfChanged();
+    return true;
   }
   if (!strcasecmp(cmd, "SWING_VH"))  {
     uint8_t v = 102; // marker pro VH-swing
     HvacRawAnalyzer_onFrame(true, 163, &v, 1);
     hvac.setSwing("hv_swing");
     rememberRequestedHreg(HREG_SWING, swingToReg("hv_swing"));
-    // Request queued; last valid UART reception is tracked by the HVAC driver. bumpRevIfChanged(); return;
+    bumpRevIfChanged();
+    return true;
   }
   if (!strncasecmp(cmd, "SWING_FIX_", 10)) {
     const char* p = cmd + 10; // "1".."5"
@@ -888,25 +895,20 @@ static void processCommand(const char* cmd) {
       };
       hvac.setSwing(fixed[pos - 1]);
       rememberRequestedHreg(HREG_SWING, swingToReg(fixed[pos - 1]));
-      // Request queued; last valid UART reception is tracked by the HVAC driver. bumpRevIfChanged(); return;
+      bumpRevIfChanged();
+    return true;
     }
     Serial.println(F("SWING: nepodporovany alias"));
-    return;
+    return false;
   }
     // FACTORY RESET (nevratné!) – použij pouze pokud MQTT je důvěryhodné
   if (!strcasecmp(cmd, "FACTORY_RESET") || !strcasecmp(cmd, "RESET_FACTORY")) {
-    // volitelně: publikovat upozornění na status topic
-    Serial.println(F("[FACTORY] Trigger via MQTT"));
-    do {
-      // malá odpověď HTTP/MQTT může ještě odejít, ale nečekáme dlouho
-      if (mqttClient.connected()) mqttClient.loop();
-      delay(50);
-    } while (false);
-    doFactoryReset();
-    return;
+    Serial.println(F("Factory reset denied via generic HVAC command"));
+    return false;
   }
 
   Serial.print(F("Neznamy prikaz: ")); Serial.println(cmd);
+  return false;
 }
 
 
@@ -921,14 +923,20 @@ static void processCommand(const char* cmd) {
 
 // ================== MQTT ==================
 static void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  static char buf[128];
-  unsigned int n = (length < sizeof(buf) - 1) ? length : (sizeof(buf) - 1);
-  memcpy(buf, payload, n);
-  buf[n] = '\0';
-
-  Serial.print(F("MQTT zpráva (")); Serial.print(topic); Serial.print(F("): "));
-  Serial.println(buf);
-  processCommand(buf);
+  char cmdTopic[96];
+  expandTopic(deviceConfig.mqttCmdTopic, cmdTopic, sizeof(cmdTopic));
+  if (!topic || strcmp(topic, cmdTopic) != 0) return;
+  if (!payload || length == 0 || length >= 64) {
+    Serial.println(F("MQTT: empty or oversized command rejected"));
+    return;
+  }
+  char cmd[64];
+  memcpy(cmd, payload, length);
+  cmd[length] = '\0';
+  if (!processCommand(cmd)) {
+    Serial.print(F("MQTT: command rejected: "));
+    Serial.println(cmd);
+  }
 }
 
 static bool isMqttHostConfigured() {
@@ -1517,9 +1525,15 @@ static void handleCommand() {
   if (server.hasArg("cmd")) {
     String c = server.arg("cmd");
     c.trim();
-    char tmp[64]; c.toCharArray(tmp, sizeof(tmp));
-    processCommand(tmp);
-    server.send(200, "text/plain", String("Příkaz proveden: ") + c);
+    if (c.length() == 0 || c.length() >= 64) {
+      server.send(400, "text/plain", "Neplatná délka příkazu");
+      return;
+    }
+    char tmp[64];
+    c.toCharArray(tmp, sizeof(tmp));
+    const bool accepted = processCommand(tmp);
+    server.send(accepted ? 200 : 400, "text/plain",
+                accepted ? String("Příkaz přijat: ") + c : String("Neplatný příkaz: ") + c);
   } else {
     server.send(400, "text/plain", "Chybí parametr cmd");
   }
@@ -1786,8 +1800,7 @@ static void handleTelnet() {
         telnetClient.flush();
         doFactoryReset();
       } else {
-        processCommand(line);
-        telnetClient.println(F("OK"));
+        telnetClient.println(processCommand(line) ? F("OK") : F("ERR: invalid command"));
       }
 
       telnetClient.print(F("> "));
