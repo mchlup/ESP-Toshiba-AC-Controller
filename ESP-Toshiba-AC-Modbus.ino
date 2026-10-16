@@ -972,7 +972,7 @@ static void configureMqttClient() {
 }
 
 static void connectToMQTT() {
-  if (!mqttEnabled || WiFi.status() != WL_CONNECTED || otaActive || fw_in_progress) return;
+  if (!mqttEnabled || WiFi.status() != WL_CONNECTED || otaActive) return;
   if (mqttClient.connected()) return;
   if (!isMqttHostConfigured()) return;
   uint32_t now = millis();
