@@ -1109,7 +1109,7 @@ bool ToshibaCarrierHvac::chunkSplit(byte data[], size_t dataLen) {
         yield();
     }
     return processed;
-
+}
 
 bool ToshibaCarrierHvac::packetMonitor(void) {
     if (!_serial || !_serial->available()) return false;
