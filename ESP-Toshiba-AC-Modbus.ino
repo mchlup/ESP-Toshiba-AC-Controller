@@ -514,6 +514,24 @@ static void expandTopic(const char* in, char* out, size_t outLen) {
 // Null-safe helper pro JSON
 static const char* nz(const char* s) { return s ? s : ""; }
 
+// Escape user-configurable labels before inserting into HTML.
+static String htmlEscape(const char* raw) {
+  String escaped;
+  const char* p = raw ? raw : "";
+  escaped.reserve(strlen(p) + 8);
+  for (; *p; ++p) {
+    switch (*p) {
+      case '&': escaped += F("&amp;"); break;
+      case '<': escaped += F("&lt;"); break;
+      case '>': escaped += F("&gt;"); break;
+      case '"': escaped += F("&quot;"); break;
+      case '\'': escaped += F("&#39;"); break;
+      default: escaped += *p; break;
+    }
+  }
+  return escaped;
+}
+
 // ---------- HVAC RAW ANALYZER (TX/RX logger + heuristika pro FIX1..5) ----------
 struct RawEvt {
   uint32_t ts_ms;
@@ -954,7 +972,7 @@ static void configureMqttClient() {
 }
 
 static void connectToMQTT() {
-  if (!mqttEnabled || WiFi.status() != WL_CONNECTED) return;
+  if (!mqttEnabled || WiFi.status() != WL_CONNECTED || otaActive || fw_in_progress) return;
   if (mqttClient.connected()) return;
   if (!isMqttHostConfigured()) return;
   uint32_t now = millis();
@@ -1284,7 +1302,6 @@ static void modbusSetup() {
   for (uint16_t r = 0; r < HREG__COUNT; ++r) {
     hregCache[r] = mb.Hreg(r);
   }
-  modbusActive = true;
   Serial.printf("Modbus TCP server ON (port 502, unit %u - info only)\n", deviceConfig.modbusUnitId);
 }
 
@@ -1327,7 +1344,7 @@ static void handleRoot() {
   html += F("<div class='header'>"
             "  <div class='hgroup'>"
             "    <span class='brand'>");
-  html += (deviceLabel[0] ? deviceLabel : "Toshiba HVAC");
+  html += htmlEscape(deviceLabel[0] ? deviceLabel : "Toshiba HVAC");
   html += F("</span>"
             "    <span class='badge'>ID: ");
   html += deviceID;
@@ -1335,7 +1352,7 @@ static void handleRoot() {
   html += F("</span>");
   if (deviceConfig.room[0]) {
     html += F("<span class='badge'>Room: ");
-    html += deviceConfig.room;
+    html += htmlEscape(deviceConfig.room);
     html += F("</span>");
   }
    html += F("  </div>"
@@ -1608,7 +1625,12 @@ static void handleMQTTConfig() {
   }
 
   // Restart Modbusu dle nastavení
-  if (deviceConfig.modbusEnable) modbusSetup(); else modbusActive = false;
+  // Avoid repeatedly calling mb.server()/addHreg() for an already active server.
+  if (deviceConfig.modbusEnable) {
+    if (!modbusActive) modbusSetup();
+  } else {
+    modbusActive = false;
+  }
 
   // Telnet runtime přepnutí
   telnetEnabled = (deviceConfig.telnetEnable != 0);
@@ -1631,10 +1653,10 @@ static void handleDebug() {
   dbg += F("<!doctype html><meta charset='utf-8'><title>Debug</title><pre>");
   //dbg += F("Device ID: "); dbg += deviceID; dbg += deviceConfig.useCustomId ? " (custom)" : " (MAC)"; dbg += F("\n");
   dbg += F("Device: ");
-  dbg += (deviceLabel[0] ? deviceLabel : "(unnamed)");
+  dbg += htmlEscape(deviceLabel[0] ? deviceLabel : "(unnamed)");
   dbg += F(" | ID: "); dbg += deviceID; dbg += deviceConfig.useCustomId ? " (custom)" : " (MAC)";
   dbg += F("\nRoom: ");
-  dbg += (deviceConfig.room[0] ? deviceConfig.room : "(n/a)");
+  dbg += htmlEscape(deviceConfig.room[0] ? deviceConfig.room : "(n/a)");
   dbg += F("\n");
   dbg += F("WiFi status: "); dbg += (WiFi.status()==WL_CONNECTED?"Connected":"Not connected"); dbg += F("\n");
   dbg += F("MQTT: "); dbg += (deviceConfig.mqttEnable ? (mqttClient.connected() ? "Enabled & Connected" : "Enabled, not connected") : "Disabled"); dbg += F("\n");
@@ -2148,7 +2170,7 @@ void setup() {
   if (RED_LED_PIN >= 0) {
     bootRedActive = true;
     bootRedUntil  = millis() + BOOT_RED_LED_MS;
-    analogWrite(RED_LED_PIN, 1023);   // rozsvítit hned
+    pwmWriteCompat(RED_LED_PIN, PWM_MAX); // platform-neutral PWM
   }
 
   // WiFiManager parametry – předvyplnit z EEPROM
@@ -2476,8 +2498,8 @@ void loop() {
       Serial.print(F("Heartbeat: ")); Serial.println(payload);
     }
     if (modbusActive) {
-      mb.Hreg(HREG_STATUS, buildStatusReg());
-      mb.Hreg(HREG_UPTIME_S, (uint16_t)((millis()/1000UL) & 0xFFFF));
+      setHoldingFromHvac(HREG_STATUS, buildStatusReg());
+      setHoldingFromHvac(HREG_UPTIME_S, (uint16_t)((millis()/1000UL) & 0xFFFF));
     }
     lastHeartbeat = now;
   }
