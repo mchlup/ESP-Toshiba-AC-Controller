@@ -178,7 +178,7 @@ function bind(){
   if(sg) sg.querySelectorAll('button').forEach(b=>{
     b.onclick=()=>{
       const v=b.dataset.val;
-      const map={fix:'SWING_OFF',v_swing:'SWING_V',h_swing:'SWING_H',vh_swing:'SWING_VH',
+      const map={fix:'SWING_OFF',v_swing:'SWING_V',h_swing:'SWING_H',hv_swing:'SWING_VH',vh_swing:'SWING_VH',
                  fix_pos_1:'SWING_FIX_1',fix_pos_2:'SWING_FIX_2',fix_pos_3:'SWING_FIX_3',fix_pos_4:'SWING_FIX_4',fix_pos_5:'SWING_FIX_5'};
       send(map[v]||'SWING_OFF');
     }
