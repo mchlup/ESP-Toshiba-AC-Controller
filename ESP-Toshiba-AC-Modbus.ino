@@ -1511,7 +1511,7 @@ static void handleRoot() {
 
   html += F("<div style='margin-top:14px'>"
             "  <small class='muted'>Konfigurace najdeš na původní URL <code class='tag'>/mqttconfig</code> a diagnostiku na "
-            "  <a class='link' href='/debug'>/debug</a>. Výchozí hesla <code class='tag'>admin/admin</code> prosím hned změň.</small>"
+            "  <a class='link' href='/debug'>/debug</a> | <a class='link' href='/service'>Servis HVAC</a>. Výchozí hesla <code class='tag'>admin/admin</code> prosím hned změň.</small>"
             "</div>");
 
   html += F("<script src='/app.js'></script>"
@@ -1677,8 +1677,296 @@ static void handleDebug() {
   dbg += F("RAW: tx="); dbg += g_txFrames;
   dbg += F(" rx="); dbg += g_rxFrames;
   dbg += F(" last_ms="); dbg += g_lastRawMs; dbg += F("\n");
-  dbg += F("</pre><a href='/'>Zpět</a>");
+  dbg += F("</pre><a href='/'>Zpět</a> | <a href='/service'>Servis HVAC</a>");
   server.send(200, "text/html", dbg);
+}
+
+
+// ================== HVAC Service console ==================
+// NOTE: Deliberately does not modify HVAC serial timing or raw UART TX/RX.
+#include "ServiceAssets.h"
+
+struct ServiceSwingTest {
+  bool active = false;
+  uint32_t startedMs = 0;
+  uint32_t receivedAtStart = 0;
+  char requested[16] = {0};
+  char before[16] = {0};
+  const char* observation = "unknown"; // RAM only, reset at boot
+};
+static ServiceSwingTest serviceSwingTest;
+static uint32_t serviceLastRefreshRequestMs = 0;
+static const uint32_t SERVICE_SWING_TEST_MS = 8000UL;
+static const uint32_t SERVICE_REFRESH_MIN_MS = 30000UL;
+
+static const char* serviceKnownText(const char* p) {
+  return (p && *p) ? p : "UNKNOWN";
+}
+
+static void serviceAddSettings(JsonObject dst, const hvacSettings& s) {
+  dst["state"] = serviceKnownText(s.state);
+  if (s.setpoint >= 17 && s.setpoint <= 30) dst["setpoint"] = s.setpoint;
+  else dst["setpoint"] = nullptr;
+  dst["mode"] = serviceKnownText(s.mode);
+  dst["fan"] = serviceKnownText(s.fanMode);
+  dst["swing"] = serviceKnownText(s.swing);
+  dst["pure"] = serviceKnownText(s.pure);
+  dst["powerSelect"] = serviceKnownText(s.powerSelect);
+  dst["operation"] = serviceKnownText(s.operation);
+  dst["wifiLed"] = serviceKnownText(s.wifiLed);
+}
+
+// All setters below pass permanent string literals to the HVAC library,
+// because ToshibaCarrierHvac stores const char* pointers (not String copies).
+static bool serviceSetProperty(const String& field, const String& value) {
+  if (field == "power") {
+    if (value == "on") return processCommand("STATE_ON");
+    if (value == "off") return processCommand("STATE_OFF");
+    return false;
+  }
+  if (field == "setpoint") {
+    if (value.length() < 2 || value.length() > 2) return false;
+    for (unsigned int i=0; i<value.length(); ++i) {
+      if (value[i] < '0' || value[i] > '9') return false;
+    }
+    const int t = value.toInt();
+    if (t < 17 || t > 30) return false;
+    char cmd[12];
+    snprintf(cmd, sizeof(cmd), "TEMP_%d", t);
+    return processCommand(cmd);
+  }
+  if (field == "mode") {
+    if (value == "auto") return processCommand("MODE_AUTO");
+    if (value == "cool") return processCommand("MODE_COOL");
+    if (value == "heat") return processCommand("MODE_HEAT");
+    if (value == "dry") return processCommand("MODE_DRY");
+    if (value == "fan_only") return processCommand("MODE_FAN_ONLY");
+    return false;
+  }
+  if (field == "fan") {
+    if (value == "auto") return processCommand("FAN_AUTO");
+    if (value == "quiet") return processCommand("FAN_QUIET");
+    if (value == "lvl_1") return processCommand("FAN_1");
+    if (value == "lvl_2") return processCommand("FAN_2");
+    if (value == "lvl_3") return processCommand("FAN_3");
+    if (value == "lvl_4") return processCommand("FAN_4");
+    if (value == "lvl_5") return processCommand("FAN_5");
+    return false;
+  }
+  if (field == "swing") {
+    if (value == "fix") return processCommand("SWING_OFF");
+    if (value == "v_swing") return processCommand("SWING_V");
+    if (value == "h_swing") return processCommand("SWING_H");
+    if (value == "hv_swing") return processCommand("SWING_VH");
+    if (value == "fix_pos_1") return processCommand("SWING_FIX_1");
+    if (value == "fix_pos_2") return processCommand("SWING_FIX_2");
+    if (value == "fix_pos_3") return processCommand("SWING_FIX_3");
+    if (value == "fix_pos_4") return processCommand("SWING_FIX_4");
+    if (value == "fix_pos_5") return processCommand("SWING_FIX_5");
+    return false;
+  }
+  if (field == "pure") {
+    if (value == "on") hvac.setPure("on");
+    else if (value == "off") hvac.setPure("off");
+    else return false;
+  } else if (field == "powerSelect") {
+    if (value == "50%") hvac.setPowerSelect("50%");
+    else if (value == "75%") hvac.setPowerSelect("75%");
+    else if (value == "100%") hvac.setPowerSelect("100%");
+    else return false;
+  } else if (field == "operation") {
+    if (value == "normal") hvac.setOperation("normal");
+    else if (value == "high_power") hvac.setOperation("high_power");
+    else if (value == "silent_1") hvac.setOperation("silent_1");
+    else if (value == "silent_2") hvac.setOperation("silent_2");
+    else if (value == "eco") hvac.setOperation("eco");
+    else if (value == "eight_deg") hvac.setOperation("eight_deg");
+    else if (value == "fireplace_1") hvac.setOperation("fireplace_1");
+    else if (value == "fireplace_2") hvac.setOperation("fireplace_2");
+    else return false;
+  } else if (field == "wifiLed") {
+    if (value == "on") hvac.setWifiLed("on");
+    else if (value == "off") hvac.setWifiLed("off");
+    else return false;
+  } else {
+    return false;
+  }
+  // Advanced features are queued by the original UART driver's sync loop.
+  bumpRevIfChanged();
+  return true;
+}
+
+static void handleServicePage() {
+  if (!handleAuthentication()) return;
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "text/html; charset=utf-8", FPSTR(SERVICE_HTML));
+}
+
+static void handleServiceJs() {
+  if (!handleAuthentication()) return;
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/javascript; charset=utf-8", FPSTR(SERVICE_JS));
+}
+
+static void handleServiceState() {
+  if (!handleAuthentication()) return;
+  // Dynamic allocation avoids adding a 3-4kB JSON object to the ESP8266 stack.
+  DynamicJsonDocument doc(4096);
+  const uint32_t now = millis();
+  doc["connected"] = hvac.isConnected();
+  doc["build"] = __DATE__ " " __TIME__;
+  doc["uptime_ms"] = now;
+  doc["id"] = deviceID;
+
+  serviceAddSettings(doc.createNestedObject("actual"), hvac.getSettings());
+  serviceAddSettings(doc.createNestedObject("requested"), hvac.getRequestedSettings());
+  serviceAddSettings(doc.createNestedObject("sent"), hvac.getLastSentSettings());
+
+  hvacStatus st = hvac.getStatus();
+  JsonObject telemetry = doc.createNestedObject("telemetry");
+  if (st.roomTemperature != INT8_MIN) telemetry["room_temp_c"] = st.roomTemperature;
+  else telemetry["room_temp_c"] = nullptr;
+  if (st.outsideTemperature != INT8_MIN && st.outsideTemperature != 127)
+    telemetry["outdoor_temp_c"] = st.outsideTemperature;
+  else telemetry["outdoor_temp_c"] = nullptr;
+  telemetry["on_timer"] = serviceKnownText(st.onTimer);
+  telemetry["off_timer"] = serviceKnownText(st.offTimer);
+  telemetry["cdu_running"] = st.running;
+
+  JsonObject diag = doc.createNestedObject("diag");
+  diag["rx_ok"] = hvac.validPackets();
+  diag["rx_invalid"] = hvac.invalidPackets();
+  diag["handshakes"] = hvac.handshakeAttempts();
+  uint32_t lastRx = hvac.lastValidRxMs();
+  if (lastRx) diag["last_rx_age_ms"] = now - lastRx;
+  else diag["last_rx_age_ms"] = nullptr;
+  diag["wifi_connected"] = WiFi.status() == WL_CONNECTED;
+  if (WiFi.status() == WL_CONNECTED) diag["rssi_dbm"] = WiFi.RSSI();
+  else diag["rssi_dbm"] = nullptr;
+  diag["mqtt_connected"] = mqttEnabled && mqttClient.connected();
+  diag["modbus_active"] = modbusActive;
+  diag["free_heap"] = ESP.getFreeHeap();
+  diag["sniff_enabled"] = g_sniffEnabled;
+  diag["raw_tx"] = g_txFrames;
+  diag["raw_rx"] = g_rxFrames;
+
+  JsonObject test = doc.createNestedObject("swing_test");
+  test["active"] = serviceSwingTest.active;
+  if (serviceSwingTest.active) {
+    const char* actual = serviceKnownText(hvac.getSwing());
+    const bool freshRx = hvac.validPackets() > serviceSwingTest.receivedAtStart;
+    const uint32_t elapsed = now - serviceSwingTest.startedMs;
+    const char* result = "pending";
+    if (elapsed >= SERVICE_SWING_TEST_MS) {
+      if (!freshRx) result = "no_rx";
+      else if (strcmp(actual, serviceSwingTest.requested) == 0) {
+        result = strcmp(serviceSwingTest.before, actual) == 0 ? "already" : "reported";
+      } else result = "unconfirmed";
+    }
+    test["before"] = serviceSwingTest.before;
+    test["target"] = serviceSwingTest.requested;
+    test["actual"] = actual;
+    test["elapsed_ms"] = elapsed;
+    test["status"] = result;
+    test["observation"] = serviceSwingTest.observation;
+  }
+
+  if (doc.overflowed()) {
+    server.send(500, "text/plain", "Service JSON memory overflow");
+    return;
+  }
+  String out;
+  out.reserve(measureJson(doc) + 8);
+  serializeJson(doc, out);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", out);
+}
+
+static void handleServiceAction() {
+  if (!handleAuthentication()) return;
+  if (server.header("X-Requested-With") != "XMLHttpRequest") {
+    server.send(403, "text/plain", "Missing X-Requested-With header");
+    return;
+  }
+  if (!server.hasArg("action")) {
+    server.send(400, "text/plain", "Missing action");
+    return;
+  }
+  String action = server.arg("action");
+  String field  = server.hasArg("field") ? server.arg("field") : "";
+  String value  = server.hasArg("value") ? server.arg("value") : "";
+  if (action.length() > 20 || field.length() > 20 || value.length() > 24) {
+    server.send(400, "text/plain", "Value too long");
+    return;
+  }
+
+  if (action == "sniff") {
+    if (value == "on") HvacRawAnalyzer_enable(true);
+    else if (value == "off") HvacRawAnalyzer_enable(false);
+    else if (value == "clear") HvacRawAnalyzer_reset();
+    else { server.send(400, "text/plain", "Invalid sniff command"); return; }
+    server.send(200, "text/plain", "RAW log updated");
+    return;
+  }
+  if (action == "observe_swing") {
+    if (!serviceSwingTest.active) {
+      server.send(409, "text/plain", "Start a swing test first"); return;
+    }
+    if (value == "yes") serviceSwingTest.observation = "yes";
+    else if (value == "no") serviceSwingTest.observation = "no";
+    else if (value == "unknown") serviceSwingTest.observation = "unknown";
+    else { server.send(400, "text/plain", "Invalid observation"); return; }
+    server.send(200, "text/plain", "Observation recorded in RAM");
+    return;
+  }
+  if (!hvac.isConnected()) {
+    server.send(409, "text/plain", "HVAC UART is not connected");
+    return;
+  }
+  if (action == "refresh") {
+    const uint32_t now = millis();
+    if (serviceLastRefreshRequestMs &&
+        now - serviceLastRefreshRequestMs < SERVICE_REFRESH_MIN_MS) {
+      server.send(429, "text/plain", "Refresh limited to one per 30 seconds");
+      return;
+    }
+    serviceLastRefreshRequestMs = now;
+    hvac.forceQueryAllData();
+    server.send(202, "text/plain", "Full query requested; executes with original HVAC timing");
+    return;
+  }
+  if (action == "set") {
+    if (!serviceSetProperty(field, value)) {
+      server.send(400, "text/plain", "Unsupported property or invalid value"); return;
+    }
+    server.send(202, "text/plain", "Command queued; wait for HVAC-reported state");
+    return;
+  }
+  if (action == "test_swing") {
+    if (strcmp(serviceKnownText(hvac.getState()), "on") != 0) {
+      server.send(409, "text/plain", "Turn HVAC on before testing swing positions");
+      return;
+    }
+    if (value != "fix_pos_1" && value != "fix_pos_2" && value != "fix_pos_3" &&
+        value != "fix_pos_4" && value != "fix_pos_5") {
+      server.send(400, "text/plain", "Invalid test position"); return;
+    }
+    // Taking the initial snapshot before dispatch allows readback comparison.
+    ServiceSwingTest pending;
+    pending.active = true;
+    pending.startedMs = millis();
+    pending.receivedAtStart = hvac.validPackets();
+    strlcpy(pending.before, serviceKnownText(hvac.getSwing()), sizeof(pending.before));
+    strlcpy(pending.requested, value.c_str(), sizeof(pending.requested));
+    if (!serviceSetProperty("swing", value)) {
+      server.send(400, "text/plain", "Failed to queue swing command");
+      return;
+    }
+    serviceSwingTest = pending;
+    server.send(202, "text/plain", "Swing test started; check state and actual movement after 8s");
+    return;
+  }
+  server.send(400, "text/plain", "Unknown service action");
 }
 
 
@@ -2314,6 +2602,10 @@ void setup() {
   server.on("/command", HTTP_POST, handleCommand);
   server.on("/mqttconfig", HTTP_POST, handleMQTTConfig);
   server.on("/debug", handleDebug);
+  server.on("/service", HTTP_GET, handleServicePage);
+  server.on("/service.js", HTTP_GET, handleServiceJs);
+  server.on("/api/service/state", HTTP_GET, handleServiceState);
+  server.on("/api/service/action", HTTP_POST, handleServiceAction);
   server.on("/app.css", handleAppCss);
   server.on("/app.js",  handleAppJs);
 

@@ -200,6 +200,10 @@ class ToshibaCarrierHvac {
         void setWifiLed(const char* newWifiLed);
         hvacStatus getStatus(void);
         hvacSettings getSettings(void);
+        // Read-only snapshots of queued and last-sent settings for service diagnostics.
+        // This does not modify UART timing, packet framing or protocol handling.
+        hvacSettings getRequestedSettings(void) const { return userSettings; }
+        hvacSettings getLastSentSettings(void) const { return wantedSettings; }
         int8_t getRoomTemperature(void);
         int8_t getOutsideTemperature(void);
         const char* getState(void);
