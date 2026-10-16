@@ -1,3 +1,8 @@
+#include <Arduino.h>
+#ifndef USE_MQTT_TLS
+  #define USE_MQTT_TLS false
+#endif
+
 // ===== Platforma (ESP8266/ESP32): WiFi + WebServer =====
 #if defined(ESP8266)
   #include <ESP8266WiFi.h>
@@ -50,17 +55,8 @@ struct DeviceConfig;
 
 // Minimalní implicitní implementace „raw“ hooku, aby nepadal linker.
 // Můžeš si z toho udělat logger – níže je ukázka s volitelným výpisem.
-void HvacRawAnalyzer_onFrame(bool tx, uint8_t cmd, const uint8_t* payload, uint8_t plen) {
-  // Odkomentuj, chceš-li logovat
-  /*
-  Serial.print(tx ? F("TX ") : F("RX "));
-  Serial.print(F("CMD=")); Serial.print(cmd);
-  Serial.print(F(" PLEN=")); Serial.print(plen);
-  Serial.print(F(" PAYLOAD:"));
-  for (uint8_t i = 0; i < plen; i++) { Serial.print(' '); Serial.print(payload[i]); }
-  Serial.println();
-  */
-}
+// Defined after diagnostics storage (no dynamic allocation).
+void HvacRawAnalyzer_onFrame(bool tx, uint8_t cmd, const uint8_t* payload, uint8_t plen);
 
 // ================== HW & BUILD CONFIG ==================
 #if defined(ESP8266)
@@ -77,7 +73,7 @@ void HvacRawAnalyzer_onFrame(bool tx, uint8_t cmd, const uint8_t* payload, uint8
     #define RX_PIN       3
     #define TX_PIN       4
     #define FLASH_BTN_PIN 9      // BOOT na C3 bývá GPIO9
-    #define LED_PIN      -1      // většina C3 nemá klasickou LED na GPIO2
+    #define LED_PIN       8      // ESP32-C3 SuperMini built-in active-low LED
   #elif defined(CONFIG_IDF_TARGET_ESP32S2)
     // S2: běžně dostupné piny pro HW serial
     #define RX_PIN       16
@@ -110,7 +106,7 @@ void HvacRawAnalyzer_onFrame(bool tx, uint8_t cmd, const uint8_t* payload, uint8
 #define BTN_DEBOUNCE_MS 30
 #define BTN_SHORT_MIN   50
 #define BTN_SHORT_MAX   2000
-#define USE_MQTT_TLS  false   // true = WiFiClientSecure + 8883; false = WiFiClient + 1883
+// USE_MQTT_TLS is configured before includes.
 #define EEPROM_SIZE  1024
 #define CONFIG_MAGIC 0x42
 #define CONFIG_VER   8   // +Telnet enable/pass; OTA gating; další drobnosti
@@ -213,9 +209,9 @@ static void fillDefaultConfig(DeviceConfig &cfg) {
   cfg.modbusUnitId = 1;
 
   // OTA/Telnet: výchozí OFF (hesla prázdná = žádné)
-  cfg.otaEnable    = 1;
+  cfg.otaEnable    = 0;
   cfg.otaPassword[0] = '\0';
-  cfg.telnetEnable = 1;
+  cfg.telnetEnable = 0;
   cfg.telnetPassword[0] = '\0';
 
   // Device ID: default z MAC (useCustomId=0)
@@ -322,7 +318,7 @@ enum : uint16_t {
   // >>> NOVÉ TELEMETRIE
   HREG_TIN_X10    = 5,   // int16 (°C*10), 32767 = N/A
   HREG_TOUT_X10   = 6,   // int16 (°C*10), 32767 = N/A
-  HREG_OPER       = 7,   // 0=auto,1=cool,2=heat,3=dry,4=fan_only,5=off
+  HREG_OPER       = 7,   // 0=off,1=auto,2=heat,3=cool,4=dry,5=fan_only
   HREG_FLAGS      = 8,   // bitové příznaky (0 pokud neznámé)
   HREG_ERROR      = 9,   // error code (0xFFFF pokud neznámý)
   HREG_STATUS     = 10,  // bit0=HVAC UART, bit1=MQTT, bit2=WiFi
@@ -567,6 +563,28 @@ static void HvacRawAnalyzer_reset() {
 static void HvacRawAnalyzer_enable(bool en){ g_sniffEnabled = en; }
 static volatile uint32_t g_rxFrames = 0, g_txFrames = 0;
 static volatile uint32_t g_lastRawMs = 0;
+void HvacRawAnalyzer_onFrame(bool tx, uint8_t cmd, const uint8_t* payload, uint8_t plen) {
+  if (!g_sniffEnabled) return;
+  RawEvt &e = g_rawRing[g_rawHead % RAW_RING_MAX];
+  e.ts_ms = millis();
+  e.tx = tx;
+  e.cmd = cmd;
+  e.len = (plen > sizeof(e.data)) ? sizeof(e.data) : plen;
+  memset(e.data, 0, sizeof(e.data));
+  if (payload && e.len) memcpy(e.data, payload, e.len);
+  g_rawHead = (g_rawHead + 1) % RAW_RING_MAX;
+  g_lastRawMs = e.ts_ms;
+  if (tx) ++g_txFrames; else ++g_rxFrames;
+  const int idx = _findStats(cmd);
+  if (idx >= 0) {
+    ++g_cmdStats[idx].seen;
+    if (payload && plen) {
+      const uint8_t bin = payload[0] & 63;
+      ++g_cmdStats[idx].vcount[bin];
+    }
+  }
+}
+
 
 // --- Výstupní struktura pro odhad fix pozic (1..5) z RX armatur (cmd=163)
 struct SwingFixMap {
@@ -676,8 +694,34 @@ static uint16_t fanToReg(const char* f);
 static uint16_t swingToReg(const char* s);
 
 // --- Shadow (požadované) hodnoty pro okamžitý export do Modbusu
-static uint16_t g_reqModeReg = 0;  // 0..4  (auto,cool,heat,dry,fan_only)
-static uint16_t g_reqFanReg  = 0;  // 0..5  (0=auto, 1..5=lvl_1..lvl_5)
+// Pending writes are separate from the confirmed HVAC state.
+struct PendingHreg {
+  uint16_t value = 0;
+  uint32_t startedMs = 0;
+  bool active = false;
+};
+static PendingHreg g_pendingHreg[5];       // HREG_POWER through HREG_SWING
+static const uint32_t MODBUS_CONFIRM_TIMEOUT_MS = 10000UL;
+static void rememberRequestedHreg(uint16_t reg, uint16_t value) {
+  if (reg > HREG_SWING) return;
+  g_pendingHreg[reg].value = value;
+  g_pendingHreg[reg].startedMs = millis();
+  g_pendingHreg[reg].active = true;
+}
+static uint16_t exportedHreg(uint16_t reg, uint16_t actual) {
+  if (reg > HREG_SWING) return actual;
+  PendingHreg &p = g_pendingHreg[reg];
+  if (!p.active) return actual;
+  if (actual == p.value || millis() - p.startedMs >= MODBUS_CONFIRM_TIMEOUT_MS) {
+    p.active = false;
+    return actual;
+  }
+  return p.value;
+}
+static void setHoldingFromHvac(uint16_t reg, uint16_t value) {
+  if (mb.Hreg(reg) != value) mb.Hreg(reg, value);
+  hregCache[reg] = value; // local updates must NOT be interpreted as Modbus writes
+}
 
 static uint32_t computeStateHash() {
   uint32_t h = 2166136261u;
@@ -722,7 +766,8 @@ static void processCommand(const char* cmd) {
     uint8_t v = 1;
     HvacRawAnalyzer_onFrame(true, PSEUDO_CMD_POWER, &v, 1);
     hvac.setState("on");
-    lastHvacResponse = millis();
+    rememberRequestedHreg(HREG_POWER, 1);
+    // Request queued; last valid UART reception is tracked by the HVAC driver.
     bumpRevIfChanged();
     return;
   }
@@ -730,7 +775,8 @@ static void processCommand(const char* cmd) {
     uint8_t v = 0;
     HvacRawAnalyzer_onFrame(true, PSEUDO_CMD_POWER, &v, 1);
     hvac.setState("off");
-    lastHvacResponse = millis();
+    rememberRequestedHreg(HREG_POWER, 0);
+    // Request queued; last valid UART reception is tracked by the HVAC driver.
     bumpRevIfChanged();
     return;
   }
@@ -745,7 +791,8 @@ static void processCommand(const char* cmd) {
     HvacRawAnalyzer_onFrame(true, PSEUDO_CMD_TEMP, &tv, 1);
 
     hvac.setSetpoint((uint8_t)t);
-    lastHvacResponse = millis();
+    rememberRequestedHreg(HREG_SETPOINT, (uint16_t)t);
+    // Request queued; last valid UART reception is tracked by the HVAC driver.
     bumpRevIfChanged();
     return;
   }
@@ -767,8 +814,8 @@ static void processCommand(const char* cmd) {
     HvacRawAnalyzer_onFrame(true, PSEUDO_CMD_MODE, &mv, 1);
 
     hvac.setMode(m);
-    g_reqModeReg = modeToReg(m);
-    lastHvacResponse = millis();
+    rememberRequestedHreg(HREG_MODE, modeToReg(m));
+    // Request queued; last valid UART reception is tracked by the HVAC driver.
     bumpRevIfChanged();
     return;
   }
@@ -784,7 +831,8 @@ static void processCommand(const char* cmd) {
     else if (!strcasecmp(p, "HIGH"))   f = "lvl_5";
     else if (!strcasecmp(p, "TURBO"))  f = "lvl_5";
     else if (p[0]>='1' && p[0]<='5' && p[1]==0) {
-      static char buf[8]; snprintf(buf,sizeof(buf),"lvl_%c",p[0]); f = buf;
+      static const char* const levels[] = {"lvl_1","lvl_2","lvl_3","lvl_4","lvl_5"};
+      f = levels[p[0] - '1'];
     } else {
       Serial.println(F("FAN: nepodporovany alias"));
       return;
@@ -795,8 +843,8 @@ static void processCommand(const char* cmd) {
     HvacRawAnalyzer_onFrame(true, PSEUDO_CMD_FAN, &fv, 1);
 
     hvac.setFanMode(f);
-    g_reqFanReg = fanToReg(f);
-    lastHvacResponse = millis();
+    rememberRequestedHreg(HREG_FAN, fanToReg(f));
+    // Request queued; last valid UART reception is tracked by the HVAC driver.
     bumpRevIfChanged();
     return;
   }
@@ -806,34 +854,41 @@ static void processCommand(const char* cmd) {
     uint8_t v = 0;   // marker pro FIX
     HvacRawAnalyzer_onFrame(true, 163, &v, 1);
     hvac.setSwing("fix");
-    lastHvacResponse = millis(); bumpRevIfChanged(); return;
+    rememberRequestedHreg(HREG_SWING, swingToReg("fix"));
+    // Request queued; last valid UART reception is tracked by the HVAC driver. bumpRevIfChanged(); return;
   }
   if (!strcasecmp(cmd, "SWING_V"))   {
     uint8_t v = 100; // marker pro V-swing
     HvacRawAnalyzer_onFrame(true, 163, &v, 1);
     hvac.setSwing("v_swing");
-    lastHvacResponse = millis(); bumpRevIfChanged(); return;
+    rememberRequestedHreg(HREG_SWING, swingToReg("v_swing"));
+    // Request queued; last valid UART reception is tracked by the HVAC driver. bumpRevIfChanged(); return;
   }
   if (!strcasecmp(cmd, "SWING_H"))   {
     uint8_t v = 101; // marker pro H-swing
     HvacRawAnalyzer_onFrame(true, 163, &v, 1);
     hvac.setSwing("h_swing");
-    lastHvacResponse = millis(); bumpRevIfChanged(); return;
+    rememberRequestedHreg(HREG_SWING, swingToReg("h_swing"));
+    // Request queued; last valid UART reception is tracked by the HVAC driver. bumpRevIfChanged(); return;
   }
   if (!strcasecmp(cmd, "SWING_VH"))  {
     uint8_t v = 102; // marker pro VH-swing
     HvacRawAnalyzer_onFrame(true, 163, &v, 1);
-    hvac.setSwing("vh_swing");
-    lastHvacResponse = millis(); bumpRevIfChanged(); return;
+    hvac.setSwing("hv_swing");
+    rememberRequestedHreg(HREG_SWING, swingToReg("hv_swing"));
+    // Request queued; last valid UART reception is tracked by the HVAC driver. bumpRevIfChanged(); return;
   }
   if (!strncasecmp(cmd, "SWING_FIX_", 10)) {
     const char* p = cmd + 10; // "1".."5"
     if (p[0]>='1' && p[0]<='5' && p[1]==0) {
       uint8_t pos = (uint8_t)(p[0]-'0');            // 1..5
       HvacRawAnalyzer_onFrame(true, 163, &pos, 1);  // TX pro heuristiku
-      char buf[16]; snprintf(buf,sizeof(buf),"fix_pos_%c",p[0]);
-      hvac.setSwing(buf);
-      lastHvacResponse = millis(); bumpRevIfChanged(); return;
+      static const char* const fixed[] = {
+        "fix_pos_1","fix_pos_2","fix_pos_3","fix_pos_4","fix_pos_5"
+      };
+      hvac.setSwing(fixed[pos - 1]);
+      rememberRequestedHreg(HREG_SWING, swingToReg(fixed[pos - 1]));
+      // Request queued; last valid UART reception is tracked by the HVAC driver. bumpRevIfChanged(); return;
     }
     Serial.println(F("SWING: nepodporovany alias"));
     return;
@@ -891,7 +946,7 @@ static void configureMqttClient() {
 }
 
 static void connectToMQTT() {
-  if (!mqttEnabled) return;
+  if (!mqttEnabled || WiFi.status() != WL_CONNECTED) return;
   if (mqttClient.connected()) return;
   if (!isMqttHostConfigured()) return;
   uint32_t now = millis();
@@ -935,7 +990,7 @@ static void publishState() {
   doc["swing"] = nz(hvac.getSwing());
 
   // UART/komunikace s jednotkou
-  doc["hvac"]  = (hvac.isConnected() || hvac.isCduRunning()) ? "Active" : "Inactive";
+  doc["hvac"]  = hvac.isConnected() ? "Active" : "Inactive";
 
   // doplněná telemetrie
   doc["oper"]  = hvacOperatingState();   // off/auto/cool/heat/dry/fan_only
@@ -1085,7 +1140,7 @@ static uint16_t swingToReg(const char* s) {
   if (!strcmp(s,"fix"))        return SWING_CODE_FIX;
   if (!strcmp(s,"v_swing"))    return SWING_CODE_V_SWING;
   if (!strcmp(s,"h_swing"))    return SWING_CODE_H_SWING;
-  if (!strcmp(s,"vh_swing"))   return SWING_CODE_VH_SWING;
+  if (!strcmp(s,"hv_swing") || !strcmp(s,"vh_swing")) return SWING_CODE_VH_SWING;
   if (!strcmp(s,"fix_pos_1"))  return SWING_CODE_FIX_POS_1;
   if (!strcmp(s,"fix_pos_2"))  return SWING_CODE_FIX_POS_2;
   if (!strcmp(s,"fix_pos_3"))  return SWING_CODE_FIX_POS_3;
@@ -1098,7 +1153,7 @@ static const char* regToSwing(uint16_t r) {
   if (r == SWING_CODE_FIX)        return "fix";
   if (r == SWING_CODE_V_SWING)    return "v_swing";
   if (r == SWING_CODE_H_SWING)    return "h_swing";
-  if (r == SWING_CODE_VH_SWING)   return "vh_swing";
+  if (r == SWING_CODE_VH_SWING)   return "hv_swing";
   if (r == SWING_CODE_FIX_POS_1)  return "fix_pos_1";
   if (r == SWING_CODE_FIX_POS_2)  return "fix_pos_2";
   if (r == SWING_CODE_FIX_POS_3)  return "fix_pos_3";
@@ -1110,7 +1165,7 @@ static const char* regToSwing(uint16_t r) {
 static uint16_t buildStatusReg() {
   uint16_t s = 0;
   // bit0 = HVAC UART linka / běžící CDU (dle knihovny)
-  if (hvac.isConnected() || hvac.isCduRunning()) s |= (1 << 0);
+  if (hvac.isConnected()) s |= (1 << 0);
   // bit1 = MQTT připojeno
   if (mqttEnabled && mqttClient.connected()) s |= (1 << 1);
   // bit2 = Wi-Fi připojeno
@@ -1121,7 +1176,7 @@ static uint16_t buildStatusReg() {
 // mapování "oper" do registru (včetně OFF)
 static uint16_t operToReg(const char* oper) {
   if (!oper) return 0;
-  if (!strcmp(oper, "off")) return 5;
+  if (!strcmp(oper, "off")) return 0;
   return modeToReg(oper);
 }
 
@@ -1136,124 +1191,74 @@ static int16_t tempToX10_orNA(float tC, bool ok) {
 
 static void modbusSyncFromHVAC() {
   if (!modbusActive) return;
+  const uint16_t power = !strcmp(nz(hvac.getState()), "on") ? 1 : 0;
+  setHoldingFromHvac(HREG_POWER, exportedHreg(HREG_POWER, power));
+  uint16_t setpoint = hvac.getSetpoint();
+  if (setpoint < 17) setpoint = 17;
+  if (setpoint > 30) setpoint = 30;
+  setHoldingFromHvac(HREG_SETPOINT, exportedHreg(HREG_SETPOINT, setpoint));
+  setHoldingFromHvac(HREG_MODE, exportedHreg(HREG_MODE, modeToReg(hvac.getMode())));
+  setHoldingFromHvac(HREG_FAN, exportedHreg(HREG_FAN, fanToReg(hvac.getFanMode())));
+  setHoldingFromHvac(HREG_SWING, exportedHreg(HREG_SWING, swingToReg(hvac.getSwing())));
 
-  // POWER
-  uint16_t pwr = (!strcmp(nz(hvac.getState()), "on")) ? 1 : 0;
-  if (mb.Hreg(HREG_POWER) != pwr) mb.Hreg(HREG_POWER, pwr);
-
-  // SETPOINT
-  uint16_t sp = (uint16_t)hvac.getSetpoint();
-  if (sp < 17) sp = 17; if (sp > 30) sp = 30;
-  if (mb.Hreg(HREG_SETPOINT) != sp) mb.Hreg(HREG_SETPOINT, sp);
-
-  // MODE – preferuj požadovanou (shadow) hodnotu
-  uint16_t mdCur  = modeToReg(nz(hvac.getMode()));
-  if (g_reqModeReg != mdCur && g_reqModeReg <= 4) {
-    // čekáme na potvrzení z jednotky – do Modbusu držíme požadavek
-    if (mb.Hreg(HREG_MODE) != g_reqModeReg) mb.Hreg(HREG_MODE, g_reqModeReg);
-  } else {
-    // potvrzeno nebo bez požadavku
-    if (mb.Hreg(HREG_MODE) != mdCur) mb.Hreg(HREG_MODE, mdCur);
-  }
-
-  // FAN – analogicky (0..5)
-  uint16_t fnCur = fanToReg(nz(hvac.getFanMode()));
-  if (g_reqFanReg != fnCur && isValidFanCode(g_reqFanReg)) {
-    if (mb.Hreg(HREG_FAN) != g_reqFanReg) mb.Hreg(HREG_FAN, g_reqFanReg);
-    } else {
-    if (mb.Hreg(HREG_FAN) != fnCur) mb.Hreg(HREG_FAN, fnCur);
-  }
-
-  // SWING
-  uint16_t sw = swingToReg(nz(hvac.getSwing()));
-  if (mb.Hreg(HREG_SWING) != sw) mb.Hreg(HREG_SWING, sw);
-
-  // OPER (H7)
-  const char* oper = hvacOperatingState();
-  uint16_t opr = operToReg(oper);
-  if (mb.Hreg(HREG_OPER) != opr) mb.Hreg(HREG_OPER, opr);
-
-  // TEPLOTY (H5/H6)
-  float tin = NAN, tout = NAN;
-  bool okTin  = hvacReadRoomTemp(tin);
-  bool okTout = hvacReadOutdoorTemp(tout);
-  int16_t tin_x10  = tempToX10_orNA(tin,  okTin);
-  int16_t tout_x10 = tempToX10_orNA(tout, okTout);
-  if ((int16_t)mb.Hreg(HREG_TIN_X10)  != tin_x10)  mb.Hreg(HREG_TIN_X10,  (uint16_t)tin_x10);
-  if ((int16_t)mb.Hreg(HREG_TOUT_X10) != tout_x10) mb.Hreg(HREG_TOUT_X10, (uint16_t)tout_x10);
-
-  // FLAGS / ERROR
-  uint16_t flags = hvacReadFlags();
-  uint16_t err   = hvacReadErrorCode();
-  if (mb.Hreg(HREG_FLAGS) != flags) mb.Hreg(HREG_FLAGS, flags);
-  if (mb.Hreg(HREG_ERROR) != err)   mb.Hreg(HREG_ERROR, err);
-
-  // STATUS + UPTIME
-  mb.Hreg(HREG_STATUS,   buildStatusReg());
-  mb.Hreg(HREG_UPTIME_S, (uint16_t)((millis()/1000UL) & 0xFFFF));
+  setHoldingFromHvac(HREG_OPER, operToReg(hvacOperatingState()));
+  float tin=NAN, tout=NAN;
+  const bool tinOk=hvacReadRoomTemp(tin), toutOk=hvacReadOutdoorTemp(tout);
+  const int16_t in = tempToX10_orNA(tin, tinOk);
+  const int16_t out = tempToX10_orNA(tout, toutOk);
+  setHoldingFromHvac(HREG_TIN_X10, static_cast<uint16_t>(in));
+  setHoldingFromHvac(HREG_TOUT_X10, static_cast<uint16_t>(out));
+  setHoldingFromHvac(HREG_FLAGS, hvacReadFlags());
+  setHoldingFromHvac(HREG_ERROR, hvacReadErrorCode());
+  setHoldingFromHvac(HREG_STATUS, buildStatusReg());
+  setHoldingFromHvac(HREG_UPTIME_S, (uint16_t)((millis()/1000UL) & 0xFFFF));
 }
 
 static void modbusApplyWrites() {
   if (!modbusActive) return;
-
-  bool changed = false;
-
   uint16_t v = mb.Hreg(HREG_POWER);
   if (v != hregCache[HREG_POWER]) {
-    hvac.setState(v ? "on" : "off");
-    hregCache[HREG_POWER] = v;
-    lastHvacResponse = millis();
-    changed = true;
+    if (v <= 1) {
+      hvac.setState(v ? "on" : "off");
+      rememberRequestedHreg(HREG_POWER, v);
+      hregCache[HREG_POWER] = v;
+    } else mb.Hreg(HREG_POWER, hregCache[HREG_POWER]);
   }
 
   v = mb.Hreg(HREG_SETPOINT);
-  if (v < 17) v = 17; if (v > 30) v = 30;
   if (v != hregCache[HREG_SETPOINT]) {
-    hvac.setSetpoint((uint8_t)v);
-    hregCache[HREG_SETPOINT] = v;
-    lastHvacResponse = millis();
-    changed = true;
+    if (v >= 17 && v <= 30) {
+      hvac.setSetpoint((uint8_t)v);
+      rememberRequestedHreg(HREG_SETPOINT, v);
+      hregCache[HREG_SETPOINT] = v;
+    } else mb.Hreg(HREG_SETPOINT, hregCache[HREG_SETPOINT]);
   }
 
   v = mb.Hreg(HREG_MODE);
-  if (!isValidModeCode(v)) {
-    // Pokud někdo zapíše mimo mapu, vrať na výchozí (třeba AUTO)
-    v = MODE_CODE_AUTO;
-  }
   if (v != hregCache[HREG_MODE]) {
-    hvac.setMode(regToMode(v));
-    g_reqModeReg = v;
-    hregCache[HREG_MODE] = v;
-    lastHvacResponse = millis();
-    changed = true;
+    if (isValidModeCode(v)) {
+      hvac.setMode(regToMode(v));
+      rememberRequestedHreg(HREG_MODE, v);
+      hregCache[HREG_MODE] = v;
+    } else mb.Hreg(HREG_MODE, hregCache[HREG_MODE]);
   }
 
   v = mb.Hreg(HREG_FAN);
-  if (!isValidFanCode(v)) {
-    v = FAN_CODE_AUTO; // mimo mapu -> bezpečně na AUTO
-  }
   if (v != hregCache[HREG_FAN]) {
-    hvac.setFanMode(regToFan(v));
-    g_reqFanReg = v;
-    hregCache[HREG_FAN] = v;
-    lastHvacResponse = millis();
-    changed = true;
+    if (isValidFanCode(v)) {
+      hvac.setFanMode(regToFan(v));
+      rememberRequestedHreg(HREG_FAN, v);
+      hregCache[HREG_FAN] = v;
+    } else mb.Hreg(HREG_FAN, hregCache[HREG_FAN]);
   }
 
   v = mb.Hreg(HREG_SWING);
-  if (!isValidSwingCode(v)) {
-    v = SWING_CODE_FIX;  // mimo mapu -> bezpečně na FIX
-  }
   if (v != hregCache[HREG_SWING]) {
-    hvac.setSwing(regToSwing(v));
-    hregCache[HREG_SWING] = v;
-    lastHvacResponse = millis();
-    changed = true;
-  }
-
-  if (changed) {
-    bumpRevIfChanged();
-    modbusSyncFromHVAC();   // <<< přidej
+    if (isValidSwingCode(v)) {
+      hvac.setSwing(regToSwing(v));
+      rememberRequestedHreg(HREG_SWING, v);
+      hregCache[HREG_SWING] = v;
+    } else mb.Hreg(HREG_SWING, hregCache[HREG_SWING]);
   }
 }
 
@@ -1266,6 +1271,7 @@ static void modbusSetup() {
   for (uint16_t r = 0; r < HREG__COUNT; ++r) {
     mb.addHreg(r, 0);
   }
+  modbusActive = true;
   modbusSyncFromHVAC();
   for (uint16_t r = 0; r < HREG__COUNT; ++r) {
     hregCache[r] = mb.Hreg(r);
@@ -1275,258 +1281,7 @@ static void modbusSetup() {
 }
 
 // ================== Web ==================
-// ============ Embedded UI assets (modern responsive) ============
-static const char APP_CSS[] PROGMEM = R"CSS(
-:root{
-  --bg: #0b1020; --fg:#e9eefb; --muted:#aab3c5; --card:#131a2e; --accent:#4f8cff;
-  --ok:#26c281; --warn:#ffb020; --bad:#ff6b6b; --border:#223052;
-  --gap: 12px; --radius: 14px; --pad: 14px; --shadow: 0 8px 24px rgba(0,0,0,.25);
-  --font: system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial;
-}
-@media (prefers-color-scheme: light){
-  :root{ --bg:#f5f7fb; --fg:#0f172a; --muted:#465066; --card:#ffffff; --accent:#2563eb; --border:#dbe1f1; }
-}
-*{box-sizing:border-box} html,body{height:100%}
-body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font);-webkit-font-smoothing:antialiased}
-.container{max-width:1024px;margin:0 auto;padding:16px}
-.header{display:flex;gap:var(--gap);align-items:center;justify-content:space-between;margin-bottom:16px}
-.hgroup{display:flex;gap:10px;align-items:center}
-.badge{font-size:12px;padding:4px 8px;border-radius:999px;background:var(--card);border:1px solid var(--border);color:var(--muted)}
-.brand{font-weight:700;font-size:18px;letter-spacing:.3px}
-.grid{display:grid;gap:var(--gap);grid-template-columns:repeat(12,1fr)}
-.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:var(--pad);box-shadow:var(--shadow)}
-.card h3{margin:.1rem 0 .6rem 0;font-size:14px;color:var(--muted);font-weight:600}
-.kv{display:grid;grid-template-columns:1fr auto;gap:8px;font-size:14px}
-.kv span:nth-child(2){color:var(--fg);font-weight:600}
-.status-dot{width:10px;height:10px;border-radius:50%;display:inline-block;vertical-align:middle;margin-right:6px}
-.ok{background:var(--ok)} .bad{background:var(--bad)} .warn{background:var(--warn)}
-.btn{appearance:none;border:1px solid var(--border);background:var(--card);color:var(--fg);padding:10px 12px;border-radius:12px;cursor:pointer;font-weight:600}
-.btn:active{transform:translateY(1px)} .btn-group{display:flex;flex-wrap:wrap;gap:8px}
-.btn.primary{background:var(--accent);border-color:transparent;color:#fff}
-.segment{display:flex;background:var(--card);border:1px solid var(--border);border-radius:999px;overflow:hidden}
-.segment button{flex:1;border:none;background:transparent;color:var(--fg);padding:10px 12px;font-weight:600;cursor:pointer}
-.segment button.active{background:var(--accent);color:#fff}
-
-/* >>> DOPLNĚNO: zvýraznění aktivních tlačítek i mimo .segment (Ventilátor / Lamel) */
-.btn-group .btn.active, 
-.btn.active{
-  background: var(--accent);
-  color: #fff;
-  border-color: transparent;
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
-}
-
-.row{display:flex;gap:12px;align-items:center}
-.value{font-size:22px;font-weight:800;letter-spacing:.3px}
-.slider{width:100%}
-/* --- form fields for config --- */
-.form{display:grid;grid-template-columns:repeat(12,1fr);gap:12px}
-.field{grid-column:span 6;display:flex;flex-direction:column;gap:6px}
-.field.sm{grid-column:span 3}
-.field.lg{grid-column:span 12}
-label{font-size:12px;color:var(--muted);font-weight:600}
-input[type=text],input[type=number],input[type=password]{
-  width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);
-  background:var(--bg);color:var(--fg)
-}
-input[disabled]{opacity:.7}
-.switchrow{display:flex;gap:10px;align-items:center}
-.help{font-size:12px;color:var(--muted)}
-small.muted{color:var(--muted)}
-footer.sticky{
-  position:sticky;bottom:0;z-index:5;background:linear-gradient(180deg, rgba(0,0,0,0), rgba(0,0,0,.2) 8px, var(--bg) 12px);
-  padding-top:6px;margin-top:14px
-}
-.footerbar{display:flex;gap:var(--gap);align-items:center;padding:10px;border:1px solid var(--border);background:var(--card);
-  border-radius:16px;box-shadow:var(--shadow);flex-wrap:wrap}
-.footerbar .grow{flex:1;min-width:180px}
-hr.sep{border:none;border-top:1px dashed var(--border);margin:10px 0}
-a.link{color:var(--accent);text-decoration:none;font-weight:600}
-code.tag{background:#00000020;border:1px solid var(--border);padding:2px 6px;border-radius:8px;font-family:ui-monospace,Consolas;font-size:12px}
-@media (max-width:900px){ .grid {grid-template-columns:repeat(6,1fr)} }
-@media (max-width:640px){ .grid {grid-template-columns:repeat(4,1fr)} .header{flex-wrap:wrap} }
-)CSS";
-
-static const char APP_JS[] PROGMEM = R"JS(
-const $ = sel => document.querySelector(sel);
-
-function setActive(group, value){
-  if(!group) return;
-  group.querySelectorAll('button').forEach(b=>{
-    b.classList.toggle('active', b.dataset.val===value);
-  });
-}
-
-async function apiState(){
-  const r = await fetch('/api/state.json',{cache:'no-store'});
-  if(!r.ok) throw new Error('state http '+r.status);
-  return await r.json();
-}
-
-async function send(cmd){
-  try{
-    const r = await fetch('/command?cmd='+encodeURIComponent(cmd),{cache:'no-store'});
-    if(!r.ok) throw 0;
-  }catch(e){}
-}
-
-function fmt(val, unit=''){ return (val==null?'—':val)+unit; }
-
-async function refresh(){
-  try{
-    const s = await apiState();
-    // headline
-    const oper = $('#oper');
-    if(oper) oper.textContent = s.oper || '—';
-    const pwrDot = $('#pwrDot');
-    if(pwrDot) pwrDot.className = 'status-dot '+((s.power==='on')?'ok':'bad');
-
-    // temps
-    const setVal = $('#setVal');
-    const slider = $('#temp');
-    if(typeof s.temp==='number'){
-      if(setVal) setVal.textContent = s.temp;
-      if(slider && !document.activeElement.isSameNode(slider)){ slider.value = s.temp; }
-    }
-    const tin = $('#tin'), tout = $('#tout');
-    if(tin)  tin.textContent  = (s.t_in!=null)? (s.t_in.toFixed(1)+' °C') : '—';
-    if(tout) tout.textContent = (s.t_out!=null)? (s.t_out.toFixed(1)+' °C') : '—';
-
-    // segments
-    setActive($('#modeGroup'), s.mode||'auto');
-    setActive($('#fanGroup'),  s.fan||'auto');
-    setActive($('#swingGroup'), s.swing||'fix');
-
-    // badges
-    const hvacBadge = $('#hvacBadge');
-    if(hvacBadge) hvacBadge.innerHTML = `<span class="status-dot ${s.hvac==='Active'?'ok':'bad'}"></span>${s.hvac||'—'}`;
-  }catch(e){}
-}
-
-function bind(){
-  // Config UI
-  loadCfgUI();
-  const rld = $('#btnCfgReload'), sv = $('#btnCfgSave');
-  if(rld) rld.onclick = loadCfgUI;
-  if(sv)  sv.onclick  = saveCfgUI;
-
-  // power
-  const btnOn = $('#btnOn'), btnOff = $('#btnOff');
-  if(btnOn)  btnOn.onclick  = ()=>send('STATE_ON');
-  if(btnOff) btnOff.onclick = ()=>send('STATE_OFF');
-
-  // temp
-  const slid = $('#temp');
-  const lbl  = $('#setVal');
-  if(slid){
-    slid.addEventListener('input', e=>{ if(lbl) lbl.textContent = e.target.value; });
-    let tmr=null;
-    slid.addEventListener('change', e=>{
-      const v = Math.max(17, Math.min(30, parseInt(e.target.value||24,10)));
-      send('TEMP_'+v);
-      if(tmr) clearTimeout(tmr);
-      tmr=setTimeout(refresh,300);
-    });
-  }
-
-  // segments
-  const mg = $('#modeGroup');
-  if(mg) mg.querySelectorAll('button').forEach(b=>{
-    b.onclick = ()=>{
-      const map = { auto:'AUTO', cool:'COOL', heat:'HEAT', dry:'DRY', fan_only:'FAN' }; // <<< FAN => server alias
-      const val = map[b.dataset.val] || b.dataset.val.toUpperCase();
-      send('MODE_'+val);
-    };
-  });
-  const fg = $('#fanGroup');
-  if(fg) fg.querySelectorAll('button').forEach(b=>{
-    b.onclick=()=>{
-      const v=b.dataset.val;
-      const map={low:'LOW',medium:'MEDIUM',high:'HIGH','lvl_1':'1','lvl_2':'2','lvl_3':'3','lvl_4':'4','lvl_5':'5'};
-      send('FAN_'+(map[v]||v.toUpperCase()));
-    }
-  });
-  const sg = $('#swingGroup');
-  if(sg) sg.querySelectorAll('button').forEach(b=>{
-    b.onclick=()=>{
-      const v=b.dataset.val;
-      const map={fix:'SWING_OFF',v_swing:'SWING_V',h_swing:'SWING_H',vh_swing:'SWING_VH',
-                 fix_pos_1:'SWING_FIX_1',fix_pos_2:'SWING_FIX_2',fix_pos_3:'SWING_FIX_3',fix_pos_4:'SWING_FIX_4',fix_pos_5:'SWING_FIX_5'};
-      send(map[v]||'SWING_OFF');
-    }
-  });
-
-  // polling
-  refresh();
-  setInterval(refresh, 2000);
-}
-
-async function apiConfig(){
-  const r = await fetch('/api/config.json',{cache:'no-store'});
-  if(!r.ok) throw new Error('config http '+r.status);
-  return await r.json();
-}
-
-function getVal(id){ const el=$(id); return el?el.value:''; }
-function setVal(id,v){ const el=$(id); if(el!=null) el.value = (v==null?'':v); }
-
-async function loadCfgUI(){
-  try{
-    const c = await apiConfig();
-    setVal('#cfg_mqtt_en', c.mqtt_en); setVal('#cfg_server', c.server); setVal('#cfg_port', c.port);
-    setVal('#cfg_user', c.user); setVal('#cfg_pass', c.pass);
-    setVal('#cfg_cmdtopic', c.cmdtopic); setVal('#cfg_statetopic', c.statetopic); setVal('#cfg_hbtopic', c.hbtopic);
-    setVal('#cfg_webuser', c.webuser); setVal('#cfg_webpass', c.webpass);
-    setVal('#cfg_dev_id_en', c.dev_id_en); setVal('#cfg_dev_id', c.dev_id);
-    setVal('#cfg_room', c.room);
-    setVal('#cfg_name', c.name);
-    setVal('#cfg_mb_en', c.mb_en); setVal('#cfg_mb_port', c.mb_port); setVal('#cfg_mb_uid', c.mb_uid);
-    setVal('#cfg_ota_en', c.ota_en); setVal('#cfg_ota_pass', c.ota_pass);
-    setVal('#cfg_telnet_en', c.telnet_en); setVal('#cfg_telnet_pass', c.telnet_pass);
-    const msg = $('#cfgMsg'); if(msg) msg.textContent = '';
-  }catch(e){
-    const msg = $('#cfgMsg'); if(msg) msg.textContent = 'Nepodařilo se načíst konfiguraci.';
-  }
-}
-
-async function saveCfgUI(){
-  const q = new URLSearchParams({
-    mqtt_en: getVal('#cfg_mqtt_en'),
-    server:  getVal('#cfg_server'),
-    port:    getVal('#cfg_port'),
-    user:    getVal('#cfg_user'),
-    pass:    getVal('#cfg_pass'),
-    cmdtopic: getVal('#cfg_cmdtopic'),
-    statetopic: getVal('#cfg_statetopic'),
-    hbtopic: getVal('#cfg_hbtopic'),
-    webuser: getVal('#cfg_webuser'),
-    webpass: getVal('#cfg_webpass'),
-    dev_id_en: getVal('#cfg_dev_id_en'),
-    dev_id:    getVal('#cfg_dev_id'),
-    room:    getVal('#cfg_room'),
-    name:    getVal('#cfg_name'),
-    mb_en: getVal('#cfg_mb_en'),
-    ota_en:  getVal('#cfg_ota_en'),
-    ota_pass:getVal('#cfg_ota_pass'),
-    telnet_en:  getVal('#cfg_telnet_en'),
-    telnet_pass:getVal('#cfg_telnet_pass'),
-  });
-  try{
-    const r = await fetch('/mqttconfig?'+q.toString(), {cache:'no-store'});
-    const msg = $('#cfgMsg');
-    if(r.ok){
-      if(msg) msg.textContent = 'Konfigurace uložena. Aplikuji…';
-      setTimeout(()=>{ loadCfgUI(); refresh(); }, 500);
-    }else{
-      if(msg) msg.textContent = 'Chyba při ukládání ('+r.status+').';
-    }
-  }catch(e){
-    const msg = $('#cfgMsg'); if(msg) msg.textContent = 'Chyba při ukládání.';
-  }
-}
-
-document.addEventListener('DOMContentLoaded', bind);
-)JS";
+#include "WebAssets.h"
 
 static bool handleAuthentication() {
   if (!server.authenticate(deviceConfig.webUser, deviceConfig.webPassword)) {
@@ -1756,6 +1511,9 @@ static void handleRoot() {
 
 static void handleCommand() {
   if (!handleAuthentication()) return;
+  if (server.header("X-Requested-With") != "XMLHttpRequest") {
+    server.send(403,"text/plain","Invalid request"); return;
+  }
   if (server.hasArg("cmd")) {
     String c = server.arg("cmd");
     c.trim();
@@ -1769,22 +1527,25 @@ static void handleCommand() {
 
 static void handleMQTTConfig() {
   if (!handleAuthentication()) return;
+  if (server.header("X-Requested-With") != "XMLHttpRequest") {
+    server.send(403,"text/plain","Invalid request"); return;
+  }
 
   if (server.hasArg("mqtt_en")) deviceConfig.mqttEnable = (uint8_t)server.arg("mqtt_en").toInt();
   if (server.hasArg("server")) server.arg("server").toCharArray(deviceConfig.mqttServer, sizeof(deviceConfig.mqttServer));
   if (server.hasArg("port"))   deviceConfig.mqttPort = (uint16_t)server.arg("port").toInt();
   if (server.hasArg("user"))   server.arg("user").toCharArray(deviceConfig.mqttUser, sizeof(deviceConfig.mqttUser));
-  if (server.hasArg("pass"))   server.arg("pass").toCharArray(deviceConfig.mqttPassword, sizeof(deviceConfig.mqttPassword));
+  if (server.hasArg("pass") && server.arg("pass").length())   server.arg("pass").toCharArray(deviceConfig.mqttPassword, sizeof(deviceConfig.mqttPassword));
   if (server.hasArg("cmdtopic")) server.arg("cmdtopic").toCharArray(deviceConfig.mqttCmdTopic, sizeof(deviceConfig.mqttCmdTopic));
   if (server.hasArg("statetopic")) server.arg("statetopic").toCharArray(deviceConfig.mqttStateTopic, sizeof(deviceConfig.mqttStateTopic));
   if (server.hasArg("hbtopic")) server.arg("hbtopic").toCharArray(deviceConfig.mqttHeartbeatTopic, sizeof(deviceConfig.mqttHeartbeatTopic));
 
   if (server.hasArg("webuser")) server.arg("webuser").toCharArray(deviceConfig.webUser, sizeof(deviceConfig.webUser));
-  if (server.hasArg("webpass")) server.arg("webpass").toCharArray(deviceConfig.webPassword, sizeof(deviceConfig.webPassword));
+  if (server.hasArg("webpass") && server.arg("webpass").length()) server.arg("webpass").toCharArray(deviceConfig.webPassword, sizeof(deviceConfig.webPassword));
 
   // OTA
   if (server.hasArg("ota_en"))   deviceConfig.otaEnable = (uint8_t)server.arg("ota_en").toInt();
-  if (server.hasArg("ota_pass")) server.arg("ota_pass").toCharArray(deviceConfig.otaPassword, sizeof(deviceConfig.otaPassword));
+  if (server.hasArg("ota_pass") && server.arg("ota_pass").length()) server.arg("ota_pass").toCharArray(deviceConfig.otaPassword, sizeof(deviceConfig.otaPassword));
 
   // Device ID
   if (server.hasArg("dev_id_en")) deviceConfig.useCustomId = (uint8_t)server.arg("dev_id_en").toInt();
@@ -1804,7 +1565,7 @@ static void handleMQTTConfig() {
 
   // Telnet
   if (server.hasArg("telnet_en"))   deviceConfig.telnetEnable = (uint8_t)server.arg("telnet_en").toInt();
-  if (server.hasArg("telnet_pass")) server.arg("telnet_pass").toCharArray(deviceConfig.telnetPassword, sizeof(deviceConfig.telnetPassword));
+  if (server.hasArg("telnet_pass") && server.arg("telnet_pass").length()) server.arg("telnet_pass").toCharArray(deviceConfig.telnetPassword, sizeof(deviceConfig.telnetPassword));
 
   saveConfig();
 
@@ -1984,8 +1745,8 @@ static void handleTelnet() {
         //telnetClient.printf(" last_ms="); dbg += g_lastRawMs; dbg += F("\n");
       } else if (!strcasecmp(line, "test_led")) {
         for (int i = 0; i < 3; ++i) {
-          digitalWrite(LED_PIN, LOW); delay(150);
-          digitalWrite(LED_PIN, HIGH); delay(150);
+          if (LED_PIN >= 0) { digitalWrite(LED_PIN, LOW); delay(150);
+          digitalWrite(LED_PIN, HIGH); delay(150); }
         }
         telnetClient.println(F("OK"));
 
@@ -2334,8 +2095,10 @@ static void handleFactoryResetPost() {
 // ================== Setup/Loop ==================
 void setup() {
   // LEDy
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH); // zhasnuto (active LOW)
+  if (LED_PIN >= 0) {
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, HIGH); // active LOW
+  }
   pinMode(FLASH_BTN_PIN, INPUT_PULLUP);
 
   if (RED_LED_PIN >= 0) {
@@ -2491,15 +2254,21 @@ void setup() {
   mqttEnabled = deviceConfig.mqttEnable != 0;
   if (mqttEnabled && isMqttHostConfigured()) {
     #if (USE_MQTT_TLS)
-      wifiClientTLS.setInsecure(); // volitelně (vývoj)
-    #endif // volitelně (vývoj)
+      #error "MQTT TLS requires certificate configuration; unverified TLS is disabled."
+    #endif
     configureMqttClient();
   }
 
   // Web
+#if defined(ESP8266)
+  server.collectHeaders("X-Requested-With");
+#else
+  const char* customHeaders[] = {"X-Requested-With"};
+  server.collectHeaders(customHeaders, 1);
+#endif
   server.on("/", handleRoot);
-  server.on("/command", handleCommand);
-  server.on("/mqttconfig", handleMQTTConfig);
+  server.on("/command", HTTP_POST, handleCommand);
+  server.on("/mqttconfig", HTTP_POST, handleMQTTConfig);
   server.on("/debug", handleDebug);
   server.on("/app.css", handleAppCss);
   server.on("/app.js",  handleAppJs);
@@ -2526,13 +2295,13 @@ void setup() {
     doc["server"]  = deviceConfig.mqttServer;
     doc["port"]    = deviceConfig.mqttPort;
     doc["user"]    = deviceConfig.mqttUser;
-    doc["pass"]    = deviceConfig.mqttPassword;
+    doc["pass"]    = "";
     doc["cmdtopic"]= deviceConfig.mqttCmdTopic;
     doc["statetopic"] = deviceConfig.mqttStateTopic;
     doc["hbtopic"] = deviceConfig.mqttHeartbeatTopic;
 
     doc["webuser"] = deviceConfig.webUser;
-    doc["webpass"] = deviceConfig.webPassword;
+    doc["webpass"] = "";
 
     doc["dev_id_en"] = deviceConfig.useCustomId;
     doc["dev_id"]    = deviceConfig.customDeviceId;
@@ -2544,10 +2313,10 @@ void setup() {
     doc["mb_uid"]  = deviceConfig.modbusUnitId; // info
 
     doc["ota_en"]  = deviceConfig.otaEnable;
-    doc["ota_pass"]= deviceConfig.otaPassword;
+    doc["ota_pass"]= "";
 
     doc["telnet_en"]   = deviceConfig.telnetEnable;
-    doc["telnet_pass"] = deviceConfig.telnetPassword;
+    doc["telnet_pass"] = "";
 
     String out; out.reserve(measureJson(doc)+8);
     serializeJson(doc, out);
@@ -2564,7 +2333,7 @@ void setup() {
     doc["swing"] = nz(hvac.getSwing());
 
     // UART/komunikace s jednotkou
-    doc["hvac"]  = (hvac.isConnected() || hvac.isCduRunning()) ? "Active" : "Inactive";
+    doc["hvac"]  = hvac.isConnected() ? "Active" : "Inactive";
     doc["oper"]  = hvacOperatingState();
     float tin, tout;
     if (hvacReadRoomTemp(tin)  && !isnan(tin))  doc["t_in"]  = tin;
@@ -2644,7 +2413,7 @@ void setup() {
 }
 
 void loop() {
-  if (deviceConfig.otaEnable) {
+  if (deviceConfig.otaEnable && otaStarted) {
     ArduinoOTA.handle();
   }
 
@@ -2701,8 +2470,8 @@ void loop() {
   }
 
   // LED diagnostika (LOW = svítí); mimo OTA fade
-  if (!otaActive) {
-    bool hvacConn = (now - lastHvacResponse) < HVAC_TIMEOUT_MS;
+  if (!otaActive && LED_PIN >= 0) {
+    bool hvacConn = hvac.isConnected() && (now - hvac.lastValidRxMs()) < HVAC_TIMEOUT_MS;
     if (!mqttEnabled) {
       digitalWrite(LED_PIN, (now / 500) % 2 ? LOW : HIGH);         // pomalé blikání
     } else if (!mqttClient.connected()) {

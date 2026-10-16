@@ -1,3 +1,14 @@
+> **Experimental stabilization branch:** Firmware changes in this branch require
+> successful CI builds and testing on the actual Toshiba unit before production.
+> Read [the stabilization changelog](docs/CHANGELOG-STABILIZATION.md)
+> and the [verified source-code register map](docs/MODBUS-MAP.md).
+> Historic Modbus examples below may differ from current firmware mappings;
+> use docs/MODBUS-MAP.md as the reference for registers 0-11.
+>
+> **Security:** Keep the device on a trusted local network. Configure a
+> non-default WebUI password immediately; do not expose HTTP, Modbus, Telnet,
+> MQTT command topics or OTA directly to the public Internet.
+>
 # 🌡️ ESP-Toshiba-AC-Modbus
 
 **Ovládání a monitorování klimatizací Toshiba přes ESP8266/ESP32 s rozhraním Modbus TCP**
@@ -76,7 +87,9 @@ ESP zařízení čte a odesílá příkazy v binárním formátu podle **Toshiba
 
 ---
 
-## 🧮 Mapování Modbus TCP registrů (rozšířená dokumentace)
+## 🧮 Mapování Modbus TCP registrů (historická dokumentace)
+
+**Pozor:** Následující historická tabulka nemusí odpovídat aktuálnímu firmware. Pro přesné adresy a mapování použijte [docs/MODBUS-MAP.md](docs/MODBUS-MAP.md).
 
 | Adresa | Název | Typ | Rozsah | Popis a chování |
 |:--|:--|:--|:--|:--|
