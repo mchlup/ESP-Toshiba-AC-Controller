@@ -1670,6 +1670,10 @@ static void handleDebug() {
   dbg += (deviceConfig.otaPassword[0] ? "(set)" : "(empty)"); dbg += F("\n");
   dbg += F("Telnet: "); dbg += (deviceConfig.telnetEnable ? "Enabled" : "Disabled");
   dbg += deviceConfig.telnetPassword[0] ? " (password set)\n" : " (no password)\n";
+  dbg += F("UART handshake attempts: "); dbg += hvac.handshakeAttempts(); dbg += F("\n");
+  dbg += F("UART RX accepted batches: "); dbg += hvac.validPackets(); dbg += F("\n");
+  dbg += F("UART RX rejected batches: "); dbg += hvac.invalidPackets(); dbg += F("\n");
+  dbg += F("UART last valid RX (ms): "); dbg += hvac.lastValidRxMs(); dbg += F("\n");
   dbg += F("RAW: tx="); dbg += g_txFrames;
   dbg += F(" rx="); dbg += g_rxFrames;
   dbg += F(" last_ms="); dbg += g_lastRawMs; dbg += F("\n");
@@ -1762,6 +1766,11 @@ static void handleTelnet() {
         telnetClient.printf("IP: %s\r\n", WiFi.localIP().toString().c_str());
         telnetClient.printf("MQTT: %s\r\n", deviceConfig.mqttEnable ? (mqttClient.connected() ? "Enabled & Connected" : "Enabled, not connected") : "Disabled");
         telnetClient.printf("HVAC UART: %s\r\n", hvacConn ? "Active" : "Inactive");
+        telnetClient.printf("HVAC UART handshake=%lu rx_ok=%lu rx_invalid=%lu last_rx_ms=%lu\r\n",
+          (unsigned long)hvac.handshakeAttempts(),
+          (unsigned long)hvac.validPackets(),
+          (unsigned long)hvac.invalidPackets(),
+          (unsigned long)hvac.lastValidRxMs());
         telnetClient.printf("Modbus TCP: %s (port 502, unit %u - info only)\r\n",
           deviceConfig.modbusEnable ? (modbusActive ? "Enabled (running)" : "Enabled (not running)") : "Disabled",
           deviceConfig.modbusUnitId);
@@ -2360,7 +2369,7 @@ void setup() {
 
   server.on("/api/state.json", [](){
     if (!handleAuthentication()) return;
-    StaticJsonDocument<448> doc;
+    StaticJsonDocument<768> doc;
     doc["power"] = nz(hvac.getState());
     doc["temp"]  = (int)hvac.getSetpoint();
     doc["mode"]  = nz(hvac.getMode());
@@ -2369,6 +2378,10 @@ void setup() {
 
     // UART/komunikace s jednotkou
     doc["hvac"]  = hvac.isConnected() ? "Active" : "Inactive";
+    doc["uart_rx_ok"] = hvac.validPackets();
+    doc["uart_rx_invalid"] = hvac.invalidPackets();
+    doc["uart_handshakes"] = hvac.handshakeAttempts();
+    doc["uart_last_rx_ms"] = hvac.lastValidRxMs();
     doc["oper"]  = hvacOperatingState();
     float tin, tout;
     if (hvacReadRoomTemp(tin)  && !isnan(tin))  doc["t_in"]  = tin;
