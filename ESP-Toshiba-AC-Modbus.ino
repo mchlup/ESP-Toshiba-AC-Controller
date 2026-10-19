@@ -2477,6 +2477,11 @@ void setup() {
     doc["uart_rx_invalid"] = hvac.invalidPackets();
     doc["uart_handshakes"] = hvac.handshakeAttempts();
     doc["uart_last_rx_ms"] = hvac.lastValidRxMs();
+    const uint32_t lastRx = hvac.lastValidRxMs();
+    if (lastRx) doc["uart_last_rx_age_ms"] = millis() - lastRx;
+    else doc["uart_last_rx_age_ms"] = nullptr;
+    doc["wifi_connected"] = WiFi.status() == WL_CONNECTED;
+    doc["mqtt_connected"] = mqttEnabled && mqttClient.connected();
     doc["oper"]  = hvacOperatingState();
     float tin, tout;
     if (hvacReadRoomTemp(tin)  && !isnan(tin))  doc["t_in"]  = tin;
