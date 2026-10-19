@@ -108,188 +108,162 @@ h2{font-size:17px;font-weight:740;letter-spacing:-.025em;margin:5px 0 0}.page-he
 
 )CSS";
 
+// Dashboard v2: dependency-free event-driven controls, API compatible.
 static const char APP_JS[] PROGMEM = R"JS(
-const $ = sel => document.querySelector(sel);
-
-function setActive(group, value){
-  if(!group) return;
-  group.querySelectorAll('button').forEach(b=>{
-    b.classList.toggle('active', b.dataset.val===value);
-  });
+'use strict';
+(() => {
+const $ = id => document.getElementById(id);
+const $$ = selector => document.querySelectorAll(selector);
+const range = $('tempRange'), target = $('targetTemp'), power = $('powerButton');
+const labels = {auto:'Auto',cool:'Chlazení',heat:'Topení',dry:'Odvlhčení',fan_only:'Ventilátor',fix:'Pevné',v_swing:'Svisle',h_swing:'Vodorovně',hv_swing:'Obě osy',vh_swing:'Obě osy',quiet:'Tichý',lvl_1:'Stupeň 1',lvl_2:'Stupeň 2',lvl_3:'Stupeň 3',lvl_4:'Stupeň 4',lvl_5:'Stupeň 5'};
+let state=null, polling=false, editedAt=0, pending=null, toastTimer=0, errors=0, loadedSettings=false;
+const describe = value => labels[value] || value || '—';
+const tempText = v => typeof v==='number' && Number.isFinite(v) ? v.toFixed(1)+' °C' : '—';
+function toast(message,type='ok'){
+  const element=$('toast');
+  element.textContent=message;element.dataset.type=type;element.hidden=false;
+  clearTimeout(toastTimer);toastTimer=setTimeout(()=>element.hidden=true,4500);
 }
-
-async function apiState(){
-  const r = await fetch('/api/state.json',{cache:'no-store'});
-  if(!r.ok) throw new Error('state http '+r.status);
-  return await r.json();
+function updatePill(status,message){
+  $('connectionPill').dataset.state=status;
+  $('connectionText').textContent=message;
 }
-
-async function send(cmd){
-  try{
-    const r = await fetch('/command',{method:'POST',
-      headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},
-      credentials:'same-origin',body:'cmd='+encodeURIComponent(cmd),cache:'no-store'});
-    if(!r.ok) throw 0;
-  }catch(e){}
+function selectButtons(selector,value){
+  $$(selector).forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.match===value)));
 }
-
-function fmt(val, unit=''){ return (val==null?'—':val)+unit; }
-
-async function refresh(){
-  try{
-    const s = await apiState();
-    // headline
-    const oper = $('#oper');
-    if(oper) oper.textContent = s.oper || '—';
-    const pwrDot = $('#pwrDot');
-    if(pwrDot) pwrDot.className = 'status-dot '+((s.power==='on')?'ok':'bad');
-
-    // temps
-    const setVal = $('#setVal');
-    const slider = $('#temp');
-    if(typeof s.temp==='number'){
-      if(setVal) setVal.textContent = s.temp;
-      if(slider && !document.activeElement.isSameNode(slider)){ slider.value = s.temp; }
-    }
-    const tin = $('#tin'), tout = $('#tout');
-    if(tin)  tin.textContent  = (s.t_in!=null)? (s.t_in.toFixed(1)+' °C') : '—';
-    if(tout) tout.textContent = (s.t_out!=null)? (s.t_out.toFixed(1)+' °C') : '—';
-
-    // segments
-    setActive($('#modeGroup'), s.mode||'auto');
-    setActive($('#fanGroup'),  s.fan||'auto');
-    setActive($('#swingGroup'), s.swing||'fix');
-
-    // badges
-    const hvacBadge = $('#hvacBadge');
-    if(hvacBadge) hvacBadge.innerHTML = `<span class="status-dot ${s.hvac==='Active'?'ok':'bad'}"></span>${s.hvac||'—'}`;
-  }catch(e){}
+function updateTemperature(t){
+  if(!Number.isInteger(t)||t<17||t>30)return;
+  range.value=String(t);
+  target.innerHTML=String(t)+'<span>°C</span>';
+  range.style.setProperty('--value',((t-17)*100/13)+'%');
 }
-
-function bind(){
-  // Config UI
-  loadCfgUI();
-  const rld = $('#btnCfgReload'), sv = $('#btnCfgSave');
-  if(rld) rld.onclick = loadCfgUI;
-  if(sv)  sv.onclick  = saveCfgUI;
-
-  // power
-  const btnOn = $('#btnOn'), btnOff = $('#btnOff');
-  if(btnOn)  btnOn.onclick  = ()=>send('STATE_ON');
-  if(btnOff) btnOff.onclick = ()=>send('STATE_OFF');
-
-  // temp
-  const slid = $('#temp');
-  const lbl  = $('#setVal');
-  if(slid){
-    slid.addEventListener('input', e=>{ if(lbl) lbl.textContent = e.target.value; });
-    let tmr=null;
-    slid.addEventListener('change', e=>{
-      const v = Math.max(17, Math.min(30, parseInt(e.target.value||24,10)));
-      send('TEMP_'+v);
-      if(tmr) clearTimeout(tmr);
-      tmr=setTimeout(refresh,300);
-    });
+function render(data){
+  state=data;errors=0;
+  const online=data.hvac==='Active';
+  updatePill(online?'ok':'bad',online?'HVAC online':'HVAC offline');
+  const deviceName=data.name||'Toshiba HVAC';
+  $('dashboardTitle').textContent=deviceName;
+  $('roomName').textContent=data.room ? 'Místnost: '+data.room : 'Lokální ovládání klimatizace';
+  $('deviceIdentifier').textContent='ID: '+(data.id||'—');
+  $('lastUpdate').textContent='Aktualizováno '+new Date().toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const isOn=data.power==='on';
+  power.dataset.power=isOn?'on':'off';power.setAttribute('aria-pressed',String(isOn));
+  $('powerButtonLabel').textContent=isOn?'Vypnout':'Zapnout';
+  $('powerInfo').textContent=isOn?'Klimatizace zapnutá':'Klimatizace vypnutá';
+  $('hvacState').textContent=online?'Komunikuje':'Bez spojení';
+  $('hvacState').style.color=online?'var(--good)':'var(--danger)';
+  $('indoorTemp').textContent=tempText(data.t_in);
+  $('outdoorTemp').textContent=tempText(data.t_out);
+  $('modeCaption').textContent=describe(data.mode);
+  $('operatingStatus').textContent=describe(data.oper);
+  $('fanCaption').textContent=describe(data.fan);
+  $('swingCaption').textContent=describe(data.swing);
+  $('networkState').textContent='Dostupné přes WebUI';
+  const age=typeof data.uart_last_rx_ms==='number' && data.uart_last_rx_ms>0 ? (Date.now() * 0+data.uart_last_rx_ms) : 0;
+  $('uartAge').textContent=age?'Přijat rámec; čas '+Math.round(age/1000)+' s od startu ESP':'Zatím bez dat';
+  selectButtons('[data-cmd^="MODE_"]',data.mode);
+  selectButtons('[data-cmd^="FAN_"]',data.fan);
+  selectButtons('[data-cmd^="SWING_"]',data.swing==='vh_swing'?'hv_swing':data.swing);
+  if(!pending||Date.now()-pending.at>6500){
+    pending=null;
+    if(Date.now()-editedAt>2200)updateTemperature(Number(data.temp));
   }
-
-  // segments
-  const mg = $('#modeGroup');
-  if(mg) mg.querySelectorAll('button').forEach(b=>{
-    b.onclick = ()=>{
-      const map = { auto:'AUTO', cool:'COOL', heat:'HEAT', dry:'DRY', fan_only:'FAN' }; // <<< FAN => server alias
-      const val = map[b.dataset.val] || b.dataset.val.toUpperCase();
-      send('MODE_'+val);
-    };
-  });
-  const fg = $('#fanGroup');
-  if(fg) fg.querySelectorAll('button').forEach(b=>{
-    b.onclick=()=>{
-      const v=b.dataset.val;
-      const map={low:'LOW',medium:'MEDIUM',high:'HIGH','lvl_1':'1','lvl_2':'2','lvl_3':'3','lvl_4':'4','lvl_5':'5'};
-      send('FAN_'+(map[v]||v.toUpperCase()));
-    }
-  });
-  const sg = $('#swingGroup');
-  if(sg) sg.querySelectorAll('button').forEach(b=>{
-    b.onclick=()=>{
-      const v=b.dataset.val;
-      const map={fix:'SWING_OFF',v_swing:'SWING_V',h_swing:'SWING_H',hv_swing:'SWING_VH',vh_swing:'SWING_VH',
-                 fix_pos_1:'SWING_FIX_1',fix_pos_2:'SWING_FIX_2',fix_pos_3:'SWING_FIX_3',fix_pos_4:'SWING_FIX_4',fix_pos_5:'SWING_FIX_5'};
-      send(map[v]||'SWING_OFF');
-    }
-  });
-
-  // polling
-  refresh();
-  setInterval(refresh, 2000);
+  range.disabled=false;
+  $('tempDown').disabled=false;$('tempUp').disabled=false;
 }
-
-async function apiConfig(){
-  const r = await fetch('/api/config.json',{cache:'no-store'});
-  if(!r.ok) throw new Error('config http '+r.status);
-  return await r.json();
+async function request(url,options={}){
+  const response=await fetch(url,Object.assign({cache:'no-store',credentials:'same-origin'},options));
+  if(!response.ok)throw new Error((await response.text().catch(()=>''))||'HTTP '+response.status);
+  return response;
 }
-
-function getVal(id){ const el=$(id); return el?el.value:''; }
-function setVal(id,v){ const el=$(id); if(el!=null) el.value = (v==null?'':v); }
-
-async function loadCfgUI(){
+async function poll(){
+  if(document.hidden||polling)return;
+  polling=true;
+  try{render(await (await request('/api/state.json')).json());}
+  catch(err){errors++;updatePill('bad',errors>1?'Nedostupné':'Načítání selhalo');if(errors===2)toast('Nelze načíst stav ESP. Zkontrolujte síť a přihlášení.','error');}
+  finally{polling=false;}
+}
+async function command(cmd){
+  const body=new URLSearchParams({cmd});
+  pending={cmd,at:Date.now()};
   try{
-    const c = await apiConfig();
-    setVal('#cfg_mqtt_en', c.mqtt_en); setVal('#cfg_server', c.server); setVal('#cfg_port', c.port);
-    setVal('#cfg_user', c.user); setVal('#cfg_pass', c.pass);
-    setVal('#cfg_cmdtopic', c.cmdtopic); setVal('#cfg_statetopic', c.statetopic); setVal('#cfg_hbtopic', c.hbtopic);
-    setVal('#cfg_webuser', c.webuser); setVal('#cfg_webpass', c.webpass);
-    setVal('#cfg_dev_id_en', c.dev_id_en); setVal('#cfg_dev_id', c.dev_id);
-    setVal('#cfg_room', c.room);
-    setVal('#cfg_name', c.name);
-    setVal('#cfg_mb_en', c.mb_en); setVal('#cfg_mb_port', c.mb_port); setVal('#cfg_mb_uid', c.mb_uid);
-    setVal('#cfg_ota_en', c.ota_en); setVal('#cfg_ota_pass', c.ota_pass);
-    setVal('#cfg_telnet_en', c.telnet_en); setVal('#cfg_telnet_pass', c.telnet_pass);
-    const msg = $('#cfgMsg'); if(msg) msg.textContent = '';
-  }catch(e){
-    const msg = $('#cfgMsg'); if(msg) msg.textContent = 'Nepodařilo se načíst konfiguraci.';
-  }
+    await request('/command',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},body:body.toString()});
+    toast('Příkaz '+cmd.replaceAll('_',' ')+' byl přijat; čekám na potvrzení jednotky.');
+    setTimeout(poll,900);
+    return true;
+  }catch(err){pending=null;toast('Příkaz se nepodařilo odeslat: '+err.message,'error');poll();return false;}
 }
+async function setTemp(value){
+  const t=Math.max(17,Math.min(30,Number(value)));
+  if(!Number.isInteger(t))return;
+  editedAt=Date.now();
+  updateTemperature(t);
+  await command('TEMP_'+t);
+}
+range.addEventListener('input',()=>{editedAt=Date.now();updateTemperature(Number(range.value));});
+range.addEventListener('change',()=>setTemp(range.value));
+$('tempDown').addEventListener('click',()=>setTemp(Number(range.value)-1));
+$('tempUp').addEventListener('click',()=>setTemp(Number(range.value)+1));
+power.addEventListener('click',()=>command(state?.power==='on'?'STATE_OFF':'STATE_ON'));
+$$('[data-cmd]').forEach(button=>button.addEventListener('click',()=>command(button.dataset.cmd)));
 
-async function saveCfgUI(){
-  const q = new URLSearchParams({
-    mqtt_en: getVal('#cfg_mqtt_en'),
-    server:  getVal('#cfg_server'),
-    port:    getVal('#cfg_port'),
-    user:    getVal('#cfg_user'),
-    pass:    getVal('#cfg_pass'),
-    cmdtopic: getVal('#cfg_cmdtopic'),
-    statetopic: getVal('#cfg_statetopic'),
-    hbtopic: getVal('#cfg_hbtopic'),
-    webuser: getVal('#cfg_webuser'),
-    webpass: getVal('#cfg_webpass'),
-    dev_id_en: getVal('#cfg_dev_id_en'),
-    dev_id:    getVal('#cfg_dev_id'),
-    room:    getVal('#cfg_room'),
-    name:    getVal('#cfg_name'),
-    mb_en: getVal('#cfg_mb_en'),
-    ota_en:  getVal('#cfg_ota_en'),
-    ota_pass:getVal('#cfg_ota_pass'),
-    telnet_en:  getVal('#cfg_telnet_en'),
-    telnet_pass:getVal('#cfg_telnet_pass'),
+const themeKey='toshiba-ui-theme';
+try{const saved=localStorage.getItem(themeKey);if(saved==='light'||saved==='dark')document.documentElement.dataset.theme=saved;}catch(_){}
+$('themeToggle').addEventListener('click',()=>{
+  const current=document.documentElement.dataset.theme;
+  const next=(current==='dark'||(!current&&matchMedia('(prefers-color-scheme: dark)').matches))?'light':'dark';
+  document.documentElement.dataset.theme=next;
+  try{localStorage.setItem(themeKey,next);}catch(_){}
+});
+function showView(view){
+  const setting=view==='settings';
+  $('dashboardView').hidden=setting;
+  $('settingsView').hidden=!setting;
+  $$('.nav-item[data-view]').forEach(b=>{
+    const active=b.dataset.view===view;
+    b.classList.toggle('is-active',active);
+    if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');
   });
-  try{
-    const r = await fetch('/mqttconfig', {method:'POST',
-      headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},
-      credentials:'same-origin',body:q.toString(),cache:'no-store'});
-    const msg = $('#cfgMsg');
-    if(r.ok){
-      if(msg) msg.textContent = 'Konfigurace uložena. Aplikuji…';
-      setTimeout(()=>{ loadCfgUI(); refresh(); }, 500);
-    }else{
-      if(msg) msg.textContent = 'Chyba při ukládání ('+r.status+').';
-    }
-  }catch(e){
-    const msg = $('#cfgMsg'); if(msg) msg.textContent = 'Chyba při ukládání.';
-  }
+  if(setting&&!loadedSettings)loadSettings();
 }
-
-document.addEventListener('DOMContentLoaded', bind);
+$$('[data-view]').forEach(el=>el.addEventListener('click',()=>showView(el.dataset.view)));
+async function loadSettings(){
+  const notice=$('settingsMessage');
+  notice.textContent='Načítám konfiguraci…';
+  try{
+    const config=await (await request('/api/config.json')).json();
+    const form=$('settingsForm');
+    for(const [key,value]of Object.entries(config)){
+      const input=form.elements.namedItem(key);
+      if(!input)continue;
+      if(input.type==='password'){input.value='';continue;}
+      input.value=String(value??'');
+    }
+    loadedSettings=true;
+    notice.textContent='Konfigurace načtena. Prázdná hesla ponechají dosavadní hodnoty.';
+  }catch(err){notice.textContent='Konfiguraci nelze načíst: '+err.message;toast('Načtení konfigurace selhalo.','error');}
+}
+$('reloadSettings').addEventListener('click',loadSettings);
+$('settingsForm').addEventListener('submit',async event=>{
+  event.preventDefault();
+  const form=event.currentTarget,save=$('saveSettings'),notice=$('settingsMessage');
+  const body=new URLSearchParams();
+  for(const el of form.elements){
+    if(!el.name||el.disabled||el.type==='submit')continue;
+    if(el.type==='password'&&!el.value)continue;
+    body.set(el.name,el.value);
+  }
+  save.disabled=true;notice.textContent='Ukládám nastavení…';
+  try{
+    await request('/mqttconfig',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},body:body.toString()});
+    loadedSettings=false;notice.textContent='Nastavení uloženo.';
+    toast('Konfigurace úspěšně uložena.');
+    // Password may change HTTP Basic auth. Reauthentication occurs at next fetch.
+    setTimeout(loadSettings,950);
+  }catch(err){notice.textContent='Chyba uložení: '+err.message;toast('Nastavení nebylo uloženo.','error');}
+  finally{save.disabled=false;}
+});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll();});
+poll();setInterval(poll,3000);
+})();
 )JS";
-
