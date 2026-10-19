@@ -4,6 +4,7 @@ on:
     branches:
       - main
       - 'improvement/**'
+      - 'ui/**'
   pull_request:
   workflow_dispatch:
 
