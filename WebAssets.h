@@ -158,9 +158,9 @@ function render(data){
   $('operatingStatus').textContent=describe(data.oper);
   $('fanCaption').textContent=describe(data.fan);
   $('swingCaption').textContent=describe(data.swing);
-  $('networkState').textContent='Dostupné přes WebUI';
-  const age=typeof data.uart_last_rx_ms==='number' && data.uart_last_rx_ms>0 ? (Date.now() * 0+data.uart_last_rx_ms) : 0;
-  $('uartAge').textContent=age?'Přijat rámec; čas '+Math.round(age/1000)+' s od startu ESP':'Zatím bez dat';
+  $('networkState').textContent=(data.wifi_connected?'Wi-Fi OK':'Wi-Fi offline')+' / '+(data.mqtt_connected?'MQTT OK':'MQTT nepřipojeno');
+  const rxAge=data.uart_last_rx_age_ms;
+  $('uartAge').textContent=typeof rxAge==='number'?'před '+(rxAge<1000?'< 1 s':Math.round(rxAge/1000)+' s'):'Zatím bez dat';
   selectButtons('[data-cmd^="MODE_"]',data.mode);
   selectButtons('[data-cmd^="FAN_"]',data.fan);
   selectButtons('[data-cmd^="SWING_"]',data.swing==='vh_swing'?'hv_swing':data.swing);
