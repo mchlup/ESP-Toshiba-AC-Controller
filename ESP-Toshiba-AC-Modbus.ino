@@ -265,6 +265,19 @@ static uint32_t mqttReconnectCount = 0;
 static uint32_t modbusClientWrites = 0;
 static uint32_t modbusRejectedWrites = 0;
 static uint32_t restartRequestedMs = 0;
+static char csrfToken[33] = {0};
+static bool validCsrf() {
+  if (server.header("X-Requested-With") != "XMLHttpRequest") return false;
+  return server.header("X-CSRF-Token") == csrfToken && csrfToken[0];
+}
+static void initCsrf() {
+  uint32_t keys[4];
+  for (unsigned i=0; i<4; ++i) keys[i] = (uint32_t)random(0x7FFFFFFF) ^ (micros() * (i+1));
+  snprintf(csrfToken,sizeof(csrfToken),"%08lx%08lx%08lx%08lx",
+    (unsigned long)keys[0],(unsigned long)keys[1],
+    (unsigned long)keys[2],(unsigned long)keys[3]);
+}
+
 static uint32_t wifiPortalStartedMs = 0;
 static bool wifiPortalManual = false;
 static bool modbusInitializedOnce = false;
@@ -1437,6 +1450,13 @@ static void handleLocaleEn() {
   server.send(200,"application/json; charset=utf-8",FPSTR(LOCALE_EN));
 }
 
+static void handleSecurityToken() {
+  if (!handleAuthentication()) return;
+  StaticJsonDocument<80> doc;doc["csrf"] = csrfToken;
+  String response;serializeJson(doc,response);
+  server.sendHeader("Cache-Control","no-store");
+  server.send(200,"application/json",response);
+}
 static void handleFeaturesGet() {
   if (!handleAuthentication()) return;
   StaticJsonDocument<768> doc;
@@ -1471,7 +1491,7 @@ static void handleFeaturesGet() {
 }
 static void handleFeaturesSave() {
   if (!handleAuthentication()) return;
-  if (server.header("X-Requested-With") != "XMLHttpRequest") {
+  if (!validCsrf()) {
     server.send(403,"text/plain","Invalid request");return;
   }
   FeatureOptions next=featureOptions;
@@ -1495,7 +1515,7 @@ static void handleFeaturesSave() {
 }
 static void handleRestart() {
   if (!handleAuthentication()) return;
-  if (server.header("X-Requested-With") != "XMLHttpRequest" ||
+  if (!validCsrf() ||
       !server.hasArg("confirm") || server.arg("confirm") != "YES") {
     server.send(403,"text/plain","Restart requires explicit confirmation");
     return;
@@ -1506,7 +1526,7 @@ static void handleRestart() {
 
 static void handleCommand() {
   if (!handleAuthentication()) return;
-  if (server.header("X-Requested-With") != "XMLHttpRequest") {
+  if (!validCsrf()) {
     server.send(403,"text/plain","Invalid request"); return;
   }
   if (server.hasArg("cmd")) {
@@ -1528,7 +1548,7 @@ static void handleCommand() {
 
 static void handleMQTTConfig() {
   if (!handleAuthentication()) return;
-  if (server.header("X-Requested-With") != "XMLHttpRequest") {
+  if (!validCsrf()) {
     server.send(403,"text/plain","Invalid request"); return;
   }
 
@@ -1857,7 +1877,7 @@ static void handleServiceState() {
 
 static void handleServiceAction() {
   if (!handleAuthentication()) return;
-  if (server.header("X-Requested-With") != "XMLHttpRequest") {
+  if (!validCsrf()) {
     server.send(403, "text/plain", "Missing X-Requested-With header");
     return;
   }
@@ -2540,6 +2560,8 @@ void setup() {
   }
 
   Serial.begin(115200);
+  randomSeed(micros() ^ (uint32_t)ESP.getCycleCount());
+  initCsrf();
   Serial.println();
   Serial.println(F("== Boot =="));
 
@@ -2672,13 +2694,14 @@ void setup() {
 
   // Web
 #if defined(ESP8266)
-  server.collectHeaders("X-Requested-With");
+  server.collectHeaders("X-Requested-With", "X-CSRF-Token");
 #else
-  const char* customHeaders[] = {"X-Requested-With"};
-  server.collectHeaders(customHeaders, 1);
+  const char* customHeaders[] = {"X-Requested-With", "X-CSRF-Token"};
+  server.collectHeaders(customHeaders, 2);
 #endif
   server.on("/", handleRoot);
   server.on("/command", HTTP_POST, handleCommand);
+  server.on("/api/security/token", HTTP_GET, handleSecurityToken);
   server.on("/api/restart", HTTP_POST, handleRestart);
   server.on("/locale/cs.json", HTTP_GET, handleLocaleCs);
   server.on("/locale/en.json", HTTP_GET, handleLocaleEn);
