@@ -81,7 +81,6 @@ static bool haPublishDiscovery(bool enabled) {
   doc["name"] = deviceLabel[0] ? deviceLabel : "Toshiba HVAC";
   char unique[40]; snprintf(unique,sizeof(unique),"toshiba_hvac_%s",deviceID);
   doc["uniq_id"] = unique;
-  doc["~"] = ""; // No topic alias; all MQTT topics are absolute.
   char topic[96];
   expandTopic(deviceConfig.mqttStateTopic,topic,sizeof(topic));
   doc["mode_stat_t"] = topic;
@@ -110,6 +109,7 @@ static bool haPublishDiscovery(bool enabled) {
   doc["max_temp"] = 30;
   doc["temp_step"] = 1;
   doc["temp_unit"] = "C";
+  doc["precision"] = 1.0;
   JsonArray modes=doc.createNestedArray("modes");
   for (const char* val: {"off","auto","cool","heat","dry","fan_only"}) modes.add(val);
   JsonArray fans=doc.createNestedArray("fan_modes");
@@ -119,7 +119,7 @@ static bool haPublishDiscovery(bool enabled) {
   if (capabilityEnabled(CAP_SWING_VERTICAL)) swings.add("v_swing");
   if (capabilityEnabled(CAP_SWING_HORIZONTAL)) swings.add("h_swing");
   if (capabilityEnabled(CAP_SWING_BOTH)) swings.add("hv_swing");
-  if (capabilityEnabled(CAP_SWING_POSITIONS))
+  if (featureOptions.capability[CAP_SWING_POSITIONS] == CAP_SUPPORTED)
     for(int i=1;i<=5;++i) { char t[16]; snprintf(t,sizeof(t),"fix_pos_%d",i); swings.add(t); }
   if (swings.size()==0) {
     doc.remove("swing_modes");
