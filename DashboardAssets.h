@@ -85,10 +85,10 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
           </div>
           <div class="divider"></div>
           <div class="status-rows">
-            <div class="status-row"><span>Provozní stav</span><strong id="operatingStatus">—</strong></div>
-            <div class="status-row"><span>Klimatizace</span><span class="inline-state" id="hvacState">Čekám na spojení</span></div>
-            <div class="status-row"><span>Wi-Fi / MQTT</span><span id="networkState" class="soft-text">Zjišťuji…</span></div>
-            <div class="status-row"><span>Poslední UART odpověď</span><span id="uartAge" class="soft-text">—</span></div>
+            <div class="status-row"><span data-i18n="reading_status">Provozní stav</span><strong id="operatingStatus">—</strong></div>
+            <div class="status-row"><span data-i18n="hvac_state">Klimatizace</span><span class="inline-state" id="hvacState">Čekám na spojení</span></div>
+            <div class="status-row"><span data-i18n="mqtt_state">Wi-Fi / MQTT</span><span id="networkState" class="soft-text">Zjišťuji…</span></div>
+            <div class="status-row"><span data-i18n="last_reply">Poslední UART odpověď</span><span id="uartAge" class="soft-text">—</span></div>
           </div>
         </section>
 
@@ -96,9 +96,9 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
           <div class="card-head"><div><span class="section-label">REŽIM</span><h2 id="modeTitle">Způsob provozu</h2></div></div>
           <div class="choice-grid choice-grid-five" role="group" aria-label="Režim klimatizace">
             <button class="choice" type="button" data-cmd="MODE_AUTO" data-match="auto" aria-pressed="false"><span class="choice-symbol">A</span><span>Auto</span></button>
-            <button class="choice" type="button" data-cmd="MODE_COOL" data-match="cool" aria-pressed="false"><span class="choice-symbol">❄</span><span>Chlazení</span></button>
-            <button class="choice" type="button" data-cmd="MODE_HEAT" data-match="heat" aria-pressed="false"><span class="choice-symbol">☼</span><span>Topení</span></button>
-            <button class="choice" type="button" data-cmd="MODE_DRY" data-match="dry" aria-pressed="false"><span class="choice-symbol">◌</span><span>Odvlhčení</span></button>
+            <button class="choice" type="button" data-cmd="MODE_COOL" data-match="cool" aria-pressed="false"><span class="choice-symbol">❄</span><span data-i18n="cool">Chlazení</span></button>
+            <button class="choice" type="button" data-cmd="MODE_HEAT" data-match="heat" aria-pressed="false"><span class="choice-symbol">☼</span><span data-i18n="heat">Topení</span></button>
+            <button class="choice" type="button" data-cmd="MODE_DRY" data-match="dry" aria-pressed="false"><span class="choice-symbol">◌</span><span data-i18n="dry">Odvlhčení</span></button>
             <button class="choice" type="button" data-cmd="MODE_FAN" data-match="fan_only" aria-pressed="false"><span class="choice-symbol">✳</span><span>Ventilátor</span></button>
           </div>
         </section>
@@ -120,10 +120,10 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
         <section class="card swing-card" aria-labelledby="swingTitle">
           <div class="card-head"><div><span class="section-label">LAMELY</span><h2 id="swingTitle" data-i18n="airflow">Směr proudění</h2></div><span class="chip chip-soft" id="swingCaption">—</span></div>
           <div class="choice-grid swing-grid" role="group" aria-label="Pohyb lamel">
-            <button type="button" class="choice compact" data-cmd="SWING_OFF" data-match="fix" aria-pressed="false">Pevné</button>
-            <button type="button" class="choice compact" data-cmd="SWING_V" data-match="v_swing" aria-pressed="false">Svisle</button>
-            <button type="button" class="choice compact" data-cmd="SWING_H" data-match="h_swing" aria-pressed="false">Vodorovně</button>
-            <button type="button" class="choice compact" data-cmd="SWING_VH" data-match="hv_swing" aria-pressed="false">Obě osy</button>
+            <button type="button" class="choice compact" data-cmd="SWING_OFF" data-match="fix" aria-pressed="false" data-i18n="fixed">Pevné</button>
+            <button type="button" class="choice compact" data-cmd="SWING_V" data-match="v_swing" aria-pressed="false" data-i18n="vertical">Svisle</button>
+            <button type="button" class="choice compact" data-cmd="SWING_H" data-match="h_swing" aria-pressed="false" data-i18n="horizontal">Vodorovně</button>
+            <button type="button" class="choice compact" data-cmd="SWING_VH" data-match="hv_swing" aria-pressed="false" data-i18n="both">Obě osy</button>
           </div>
           <p class="hint">Podpora jednotlivých poloh lamel se liší podle modelu. <a href="/service">Testovat v servisu →</a></p>
         </section>
@@ -139,21 +139,21 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
     </section>
 
     <section id="settingsView" data-view-panel="settings" aria-labelledby="settingsTitle" hidden>
-      <div class="page-heading"><div><p class="eyebrow">SPRÁVA ZAŘÍZENÍ <span class="crumb">/</span> KONFIGURACE</p><h1 id="settingsTitle">Nastavení</h1>
+      <div class="page-heading"><div><p class="eyebrow">SPRÁVA ZAŘÍZENÍ <span class="crumb">/</span> KONFIGURACE</p><h1 id="settingsTitle" data-i18n="settings_title">Nastavení</h1>
         <p class="muted">Změny se ukládají do ESP. Prázdná hesla znamenají „ponechat stávající“.</p></div></div>
       <form id="settingsForm" autocomplete="off">
         <div class="settings-grid">
           <section class="card settings-card">
-            <div class="card-head"><div><span class="section-label">IDENTITA</span><h2>Zařízení</h2></div></div>
+            <div class="card-head"><div><span class="section-label">IDENTITA</span><h2 data-i18n="device_settings">Zařízení</h2></div></div>
             <div class="field-grid">
-              <label class="field">Název zařízení<input name="name" maxlength="31" placeholder="Klimatizace obývák"></label>
-              <label class="field">Místnost<input name="room" maxlength="31" placeholder="Obývák"></label>
+              <label class="field"><span data-i18n="room_name">Název zařízení</span><input name="name" maxlength="31" placeholder="Klimatizace obývák"></label>
+              <label class="field"><span data-i18n="unit_room">Místnost</span><input name="room" maxlength="31" placeholder="Obývák"></label>
               <label class="field">Vlastní ID<select name="dev_id_en"><option value="0">Vypnuto (MAC)</option><option value="1">Zapnuto</option></select></label>
               <label class="field">Identifikátor<input name="dev_id" maxlength="12" placeholder="AC-OBYVAK"></label>
             </div>
           </section>
           <section class="card settings-card">
-            <div class="card-head"><div><span class="section-label">INTEGRACE</span><h2>MQTT broker</h2></div></div>
+            <div class="card-head"><div><span class="section-label">INTEGRACE</span><h2 data-i18n="mqtt_broker">MQTT broker</h2></div></div>
             <div class="field-grid">
               <label class="field">MQTT<select name="mqtt_en"><option value="0">Vypnuto</option><option value="1">Zapnuto</option></select></label>
               <label class="field">Port<input name="port" type="number" min="1" max="65535" placeholder="1883"></label>
@@ -166,15 +166,15 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
             </div>
           </section>
           <section class="card settings-card">
-            <div class="card-head"><div><span class="section-label">PŘÍSTUP</span><h2>Zabezpečení WebUI</h2></div></div>
+            <div class="card-head"><div><span class="section-label">PŘÍSTUP</span><h2 data-i18n="web_security">Zabezpečení WebUI</h2></div></div>
             <div class="field-grid">
-              <label class="field">Web uživatel<input name="webuser" maxlength="31" autocomplete="username"></label>
-              <label class="field">Nové webové heslo<input name="webpass" type="password" maxlength="63" placeholder="Ponechat beze změny" autocomplete="new-password"></label>
+              <label class="field"><span data-i18n="web_user">Web uživatel</span><input name="webuser" maxlength="31" autocomplete="username"></label>
+              <label class="field"><span data-i18n="web_pass">Nové webové heslo</span><input name="webpass" type="password" maxlength="63" placeholder="Ponechat beze změny" autocomplete="new-password"></label>
             </div>
             <p class="hint">Rozhraní používá HTTP Basic ověřování. Nepřistupujte k němu přímo z veřejného internetu.</p>
           </section>
           <section class="card settings-card">
-            <div class="card-head"><div><span class="section-label">SLUŽBY</span><h2>Pokročilé funkce</h2></div></div>
+            <div class="card-head"><div><span class="section-label">SLUŽBY</span><h2 data-i18n="advanced_settings">Pokročilé funkce</h2></div></div>
             <div class="field-grid">
               <label class="field">Modbus TCP<select name="mb_en"><option value="0">Vypnuto</option><option value="1">Zapnuto</option></select></label>
               <label class="field">Port Modbus<input id="modbusPort" type="text" value="502" readonly></label>
