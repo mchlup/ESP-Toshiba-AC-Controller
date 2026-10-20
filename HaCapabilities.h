@@ -70,6 +70,7 @@ static void handleExtensionsGet() {
 static void handleExtensionsPost() {
   if(!server.authenticate(deviceConfig.webUser,deviceConfig.webPassword)){server.requestAuthentication();return;}
   if(server.header("X-Requested-With")!="XMLHttpRequest"){server.send(403,"text/plain","Invalid request");return;}
+  if(!requireCsrf())return;
   if(server.hasArg("discovery")) {
     String choice=server.arg("discovery");
     if(choice!="0"&&choice!="1"){server.send(400,"text/plain","Invalid value");return;}
@@ -89,6 +90,7 @@ static uint32_t restartAfterMs=0;
 static void handleRestart() {
   if(!server.authenticate(deviceConfig.webUser,deviceConfig.webPassword)){server.requestAuthentication();return;}
   if(server.header("X-Requested-With")!="XMLHttpRequest"){server.send(403,"text/plain","Invalid request");return;}
+  if(!requireCsrf())return;
   server.send(202,"text/plain","ESP restarting");
   restartAfterMs=millis()+1200;
 }
