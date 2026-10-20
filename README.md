@@ -1,3 +1,11 @@
+> **Feature branch (2026-10-20):** Full change log and hardware test checklist:
+> [docs/FEATURES-2026-10-20.md](docs/FEATURES-2026-10-20.md).
+> Extended Modbus TCP registers 100..112:
+> [docs/MODBUS-MAP.md](docs/MODBUS-MAP.md).
+> WiFiManager captive AP intentionally stays passwordless and WebUI
+> credentials intentionally default to admin/admin.
+> Neither interface should be exposed on an untrusted network.
+>
 > **Experimental stabilization branch:** Firmware changes in this branch require
 > successful CI builds and testing on the actual Toshiba unit before production.
 > Read [the stabilization changelog](docs/CHANGELOG-STABILIZATION.md)

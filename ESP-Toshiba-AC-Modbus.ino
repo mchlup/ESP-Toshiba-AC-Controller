@@ -69,7 +69,7 @@ void HvacRawAnalyzer_onFrame(bool tx, uint8_t cmd, const uint8_t* payload, uint8
   // Jemnější rozlišení podle cílové varianty ESP32
   #if defined(CONFIG_IDF_TARGET_ESP32C3)
     // ESP32-C3 má pouze UART0/1. Doporučené piny pro UART1:
-    // RX=GPIO20, TX=GPIO21 (na většině DevKitM-1 vyvedené)
+    // Testované připojení používá GPIO3/GPIO4; neměnit bez kontroly HW.
     #define RX_PIN       3
     #define TX_PIN       4
     #define FLASH_BTN_PIN 9      // BOOT na C3 bývá GPIO9
@@ -173,6 +173,8 @@ static uint16_t crc16_ccitt(const uint8_t* data, size_t len, uint16_t seed = 0xF
   }
   return crc;
 }
+
+#include "ControllerExtensions.h"
 
 // === VÝCHOZÍ NAPLNĚNÍ KONFIGU ===
 static void fillDefaultConfig(DeviceConfig &cfg) {
@@ -285,8 +287,10 @@ volatile bool shouldSaveConfig = false;
 uint32_t lastHvacResponse = 0;
 uint32_t lastHeartbeat = 0;
 uint32_t lastStatePub = 0;
+static uint32_t lastModbusSync=0;
 bool mqttEnabled = false;          // výchozí OFF
 int  mqttFailCount = 0;
+static uint32_t mqttConnectCount=0;
 uint32_t lastMqttAttempt = 0;
 volatile bool otaActive = false;   // << oprava: start na false
 uint32_t      otaStartMs = 0;
@@ -298,6 +302,7 @@ static bool wifiWasConnected = false;
 static bool wifiHadPortal = false;
 static uint32_t wifiAttemptStartMs = 0;
 static uint32_t wifiPortalLastClosedMs = 0;
+static uint32_t wifiPortalOpenedAtMs = 0;
 static uint32_t wifiLastReconnectMs = 0;
 static uint32_t firmwareBootMs = 0;
 static const uint32_t BOOT_RED_LED_MS = 2000UL;
@@ -322,6 +327,8 @@ static inline void pwmWriteCompat(int pin, int value01k){
   analogWrite(pin, v);
 }
 
+
+#include "SecurityGuards.h"
 
 // Mapování Holding registrů (HREG)
 enum : uint16_t {
@@ -382,6 +389,7 @@ static uint16_t crc16_x25(const uint8_t* data, size_t len) {
 
 static void loadConfig() {
   EEPROM.begin(EEPROM_SIZE);
+  loadExtensions();
   EEPROM.get(0, deviceConfig);
   if (!isConfigValid(deviceConfig)) {
     fillDefaultConfig(deviceConfig);
@@ -733,19 +741,22 @@ struct PendingHreg {
   uint32_t startedMs = 0;
   bool active = false;
 };
-static PendingHreg g_pendingHreg[5];       // HREG_POWER through HREG_SWING
+static PendingHreg g_pendingHreg[5];
+static uint16_t lastCommandStatus=0; // 0 idle,1 requested,2 confirmed,3 timeout       // HREG_POWER through HREG_SWING
 static const uint32_t MODBUS_CONFIRM_TIMEOUT_MS = 10000UL;
 static void rememberRequestedHreg(uint16_t reg, uint16_t value) {
   if (reg > HREG_SWING) return;
   g_pendingHreg[reg].value = value;
   g_pendingHreg[reg].startedMs = millis();
   g_pendingHreg[reg].active = true;
+  lastCommandStatus=1;
 }
 static uint16_t exportedHreg(uint16_t reg, uint16_t actual) {
   if (reg > HREG_SWING) return actual;
   PendingHreg &p = g_pendingHreg[reg];
   if (!p.active) return actual;
   if (actual == p.value || millis() - p.startedMs >= MODBUS_CONFIRM_TIMEOUT_MS) {
+    lastCommandStatus=(actual == p.value)?2:3;
     p.active = false;
     return actual;
   }
@@ -786,6 +797,17 @@ static void bumpRevIfChanged() {
 // ================== HVAC command parsing ==================
 static bool processCommand(const char* cmd) {
   if (!cmd || !*cmd) return false;
+  if (!strncasecmp(cmd, "HA_MODE_", 8)) {
+    const char* request = cmd + 8;
+    const char* mode = nullptr;
+    if (!strcasecmp(request, "AUTO")) mode="MODE_AUTO";
+    else if (!strcasecmp(request, "HEAT")) mode="MODE_HEAT";
+    else if (!strcasecmp(request, "COOL")) mode="MODE_COOL";
+    else if (!strcasecmp(request, "DRY")) mode="MODE_DRY";
+    else if (!strcasecmp(request, "FAN_ONLY")) mode="MODE_FAN";
+    if (!mode || !processCommand("STATE_ON")) return false;
+    return processCommand(mode);
+  }
 
   // Pseudo-kódy pro TX logování (drž je unikátní mimo reálné cmd)
   static const uint8_t PSEUDO_CMD_POWER = 200;
@@ -985,6 +1007,7 @@ static void configureMqttClient() {
   mqttClient.setServer(deviceConfig.mqttServer, deviceConfig.mqttPort);
   // Bound MQTT CONNACK wait; an unresponsive broker must not starve UART.
   mqttClient.setSocketTimeout(3);
+  if (!mqttClient.setBufferSize(2048)) Serial.println(F("MQTT buffer allocation failed"));
   mqttClient.setCallback(mqttCallback);
 }
 
@@ -1011,6 +1034,8 @@ static void connectToMQTT() {
 
   if (ok) {
     mqttFailCount = 0;
+    ++mqttConnectCount;
+    discoveryPending = true;
     mqttClient.publish(statusTopic, "online", true);
     char cmdTopic[96]; expandTopic(deviceConfig.mqttCmdTopic, cmdTopic, sizeof(cmdTopic));
     mqttClient.subscribe(cmdTopic, 1);
@@ -1057,10 +1082,41 @@ static void publishState() {
   Serial.print(F("Publikovaný stav: ")); Serial.println(payload);
 
   if (mqttEnabled && mqttClient.connected()) {
-    mqttClient.publish(topic, reinterpret_cast<const uint8_t*>(payload.c_str()), payload.length(), false);
+    if (!mqttClient.publish(topic, reinterpret_cast<const uint8_t*>(payload.c_str()), payload.length(), false)) Serial.println(F("MQTT publish failed (packet size/transport)"));
   }
   bumpRevIfChanged();
 }
+
+#include "HaCapabilities.h"
+// Passive Capability Manager: infer support from actual HVAC feedback only.
+// A missing ACK or a lack of physical movement is NOT proof of unsupported mode.
+static bool capabilityDirty=false;
+static uint32_t capabilityLastSavedMs=0;
+static void observeCapabilities() {
+  if(!hvac.isConnected() || !hvac.validPackets()) return;
+  bool changed=false;
+  auto observed=[&](unsigned index) {
+    if(index<7 && extCfg.caps[index]==0){extCfg.caps[index]=1;changed=true;}
+  };
+  const char* swing=hvac.getSwing();
+  if(swing) {
+    if(!strcmp(swing,"v_swing")) observed(0);
+    else if(!strcmp(swing,"h_swing")) observed(1);
+    else if(!strcmp(swing,"hv_swing")) observed(2);
+    else if(!strncmp(swing,"fix_pos_",8)) observed(3);
+  }
+  const char* pure=hvac.getPure();
+  if(pure && (!strcmp(pure,"on")||!strcmp(pure,"off")))observed(4);
+  const char* power=hvac.getPowerSelect();
+  if(power && (!strcmp(power,"50%")||!strcmp(power,"75%")||!strcmp(power,"100%")))observed(5);
+  const char* op=hvac.getOperation();
+  if(op && strcmp(op,"UNKNOWN") && *op)observed(6);
+  if(changed){capabilityDirty=true;discoveryPending=true;}
+  if(capabilityDirty && millis()-capabilityLastSavedMs >= 30000UL){
+    saveExtensions();capabilityDirty=false;capabilityLastSavedMs=millis();
+  }
+}
+
 
 // ================== Modbus: mapování helpery ==================
 // ====== CUSTOM MODE MAP (HREG_MODE) ======
@@ -1305,7 +1361,14 @@ static void modbusApplyWrites() {
   }
 }
 
+#include "ModbusDiagnostics.h"
+
+static bool modbusServerInitialized = false;
 static void modbusSetup() {
+  if (modbusServerInitialized) {
+    modbusActive = (deviceConfig.modbusEnable != 0);
+    return; // keep previously initialized Modbus registers
+  }
   if (!deviceConfig.modbusEnable) { modbusActive = false; return; }
 
   // Stabilní režim – naslouchat na implicitním portu 502 (nezpřístupňujeme změnu portu)
@@ -1319,11 +1382,15 @@ static void modbusSetup() {
   for (uint16_t r = 0; r < HREG__COUNT; ++r) {
     hregCache[r] = mb.Hreg(r);
   }
+  modbusAddDiagnostics();
+  modbusServerInitialized = true;
   Serial.printf("Modbus TCP server ON (port 502, unit %u - info only)\n", deviceConfig.modbusUnitId);
 }
 
 // ================== Web ==================
 #include "WebAssets.h"
+#include "LocaleCs.h"
+#include "LocaleEn.h"
 
 static bool handleAuthentication() {
   if (!server.authenticate(deviceConfig.webUser, deviceConfig.webPassword)) {
@@ -1359,6 +1426,7 @@ static void handleCommand() {
   if (server.header("X-Requested-With") != "XMLHttpRequest") {
     server.send(403,"text/plain","Invalid request"); return;
   }
+  if(!requireCsrf())return;
   if (server.hasArg("cmd")) {
     String c = server.arg("cmd");
     c.trim();
@@ -1382,6 +1450,35 @@ static void handleMQTTConfig() {
     server.send(403,"text/plain","Invalid request"); return;
   }
 
+  if(!requireCsrf())return;
+  // Validate ALL input before modifying the persisted configuration.
+  struct Limit { const char* key; size_t maximum; };
+  static const Limit limits[]={
+    {"server",63},{"user",39},{"pass",39},{"cmdtopic",63},{"statetopic",63},
+    {"hbtopic",63},{"webuser",19},{"webpass",19},{"ota_pass",31},
+    {"dev_id",31},{"room",23},{"name",23},{"telnet_pass",15}
+  };
+  for(const auto& limit : limits){
+    if(server.hasArg(limit.key) && server.arg(limit.key).length()>limit.maximum){
+      server.send(400,"text/plain",String("Field too long: ")+limit.key);return;
+    }
+  }
+  static const char* boolFields[]={"mqtt_en","ota_en","dev_id_en","mb_en","telnet_en"};
+  for(const char* key: boolFields){
+    if(!server.hasArg(key))continue;
+    const String value=server.arg(key);
+    if(value!="0"&&value!="1"){server.send(400,"text/plain",String("Invalid boolean: ")+key);return;}
+  }
+  if(server.hasArg("port")){
+    const String value=server.arg("port");
+    const long port=value.toInt();
+    if(port<1||port>65535||value!=String(port)){
+      server.send(400,"text/plain","Invalid MQTT port");return;
+    }
+  }
+  if(server.hasArg("webuser") && !server.arg("webuser").length()){
+    server.send(400,"text/plain","Web username cannot be empty");return;
+  }
   if (server.hasArg("mqtt_en")) deviceConfig.mqttEnable = (uint8_t)server.arg("mqtt_en").toInt();
   if (server.hasArg("server")) server.arg("server").toCharArray(deviceConfig.mqttServer, sizeof(deviceConfig.mqttServer));
   if (server.hasArg("port"))   deviceConfig.mqttPort = (uint16_t)server.arg("port").toInt();
@@ -1447,7 +1544,7 @@ static void handleMQTTConfig() {
   // Restart Modbusu dle nastavení
   // Avoid repeatedly calling mb.server()/addHreg() for an already active server.
   if (deviceConfig.modbusEnable) {
-    if (!modbusActive) modbusSetup();
+    if (!modbusActive && WiFi.status() == WL_CONNECTED && networkServicesStarted) modbusSetup();
   } else {
     modbusActive = false;
   }
@@ -1462,6 +1559,8 @@ static void handleMQTTConfig() {
   resp += F("<!doctype html><meta charset='utf-8'><title>OK</title><pre>Konfigurace aktualizována.\n</pre><a href='/'>Zpět</a>");
   server.send(200, "text/html", resp);
 }
+
+#include "ConfigBackup.h"
 
 static void handleDebug() {
   if (!handleAuthentication()) return;
@@ -1708,6 +1807,7 @@ static void handleServiceAction() {
     server.send(403, "text/plain", "Missing X-Requested-With header");
     return;
   }
+  if(!requireCsrf())return;
   if (!server.hasArg("action")) {
     server.send(400, "text/plain", "Missing action");
     return;
@@ -1950,94 +2050,21 @@ static void handleTelnet() {
 }
 
 // ================== FLASH button: vyvolání WiFiManager portálu ==================
+// Manual BOOT uses the same cooperative portal as automatic provisioning.
+// Never block the Toshiba main loop while the configuration page is open.
+static void startNonblockingConfigPortal();
 static void enterConfigPortal() {
-  // Do not interfere with an already running nonblocking startup portal.
-  if (wifiManager.getConfigPortalActive()) {
-    Serial.println(F("[FLASH] Config portal is already active."));
-    return;
+  if (wifiManager.getConfigPortalActive()) return;
+  Serial.println(F("[FLASH] Opening nonblocking configuration portal"));
+  if (networkServicesStarted) {
+    server.stop();                     // free TCP/80 for WiFiManager
+    if (mqttClient.connected()) mqttClient.disconnect();
+    modbusActive = false;              // temporarily pause Modbus handling
+    networkServicesStarted = false;   // listeners restarted after portal exit
   }
-  Serial.println(F("[FLASH] Request to open WiFiManager config portal"));
-
-  // Stop služeb, aby portál měl volné porty a AP naskočilo spolehlivě
-  server.stop();
-  if (mqttClient.connected()) mqttClient.disconnect();
-  bool modbusWasActive = modbusActive;
-  modbusActive = false;
-
-  // čistý AP mód kvůli stabilitě portálu
-  WiFi.disconnect();
-  WiFi.softAPdisconnect(true);
-  WiFi.mode(WIFI_AP);
-
-  wifiManager.setConfigPortalBlocking(true);
-  wifiManager.setBreakAfterConfig(true);
-  wifiManager.setConfigPortalTimeout(300); // 5 min
-
-  char apName[40];
-  snprintf(apName, sizeof(apName), "Toshiba-%s-HVAC-Setup", deviceID);
-  Serial.printf("[FLASH] Starting portal SSID: %s (connect and open http://192.168.4.1)\n", apName);
-
-  bool saved = wifiManager.startConfigPortal(apName);
-  Serial.printf("[FLASH] Portal finished: %s\n", saved ? "SAVED/CONNECTED" : "TIMEOUT/EXIT");
-
-  if (shouldSaveConfig) {
-    Serial.println(F("[FLASH] Applying params from portal..."));
-    deviceConfig.mqttEnable = (uint8_t)atoi(p_mqtt_en.getValue());
-    strlcpy(deviceConfig.mqttServer, p_mqtt_server.getValue(), sizeof(deviceConfig.mqttServer));
-    deviceConfig.mqttPort = (uint16_t)atoi(p_mqtt_port.getValue());
-    strlcpy(deviceConfig.mqttUser, p_mqtt_user.getValue(), sizeof(deviceConfig.mqttUser));
-    strlcpy(deviceConfig.mqttPassword, p_mqtt_pass.getValue(), sizeof(deviceConfig.mqttPassword));
-    strlcpy(deviceConfig.mqttCmdTopic, p_mqtt_cmd.getValue(), sizeof(deviceConfig.mqttCmdTopic));
-    strlcpy(deviceConfig.mqttStateTopic, p_mqtt_state.getValue(), sizeof(deviceConfig.mqttStateTopic));
-    strlcpy(deviceConfig.mqttHeartbeatTopic, p_mqtt_hb.getValue(), sizeof(deviceConfig.mqttHeartbeatTopic));
-
-    deviceConfig.useCustomId = (uint8_t)atoi(p_dev_id_en.getValue());
-    strlcpy(deviceConfig.customDeviceId, p_dev_id.getValue(), sizeof(deviceConfig.customDeviceId));
-    sanitizeDeviceId(deviceConfig.customDeviceId);
-
-    deviceConfig.modbusEnable = (uint8_t)atoi(p_mb_enable.getValue());
-    { // pouze info
-      uint16_t mp = (uint16_t)atoi(p_mb_port.getValue());
-      deviceConfig.modbusPort = (mp == 0 ? 502 : mp);
-    }
-    { // pouze info
-      int uid = atoi(p_mb_uid.getValue());
-      if (uid < 1) uid = 1; if (uid > 247) uid = 247;
-      deviceConfig.modbusUnitId = (uint8_t)uid;
-    }
-
-    // OTA (WiFiManager parametry)
-    deviceConfig.otaEnable = (uint8_t)atoi(p_ota_en.getValue());
-    strlcpy(deviceConfig.otaPassword, p_ota_pass.getValue(), sizeof(deviceConfig.otaPassword));
-
-    // Telnet
-    deviceConfig.telnetEnable = (uint8_t)atoi(p_telnet_en.getValue());
-    strlcpy(deviceConfig.telnetPassword, p_telnet_pass.getValue(), sizeof(deviceConfig.telnetPassword));
-
-    saveConfig();
-    shouldSaveConfig = false;
-    computeDeviceID();
-  }
-
-  // návrat do STA + restart služeb
-  WiFi.mode(WIFI_STA);
-
-  mqttEnabled = deviceConfig.mqttEnable != 0;
-  if (mqttEnabled && deviceConfig.mqttServer[0]) {
-    configureMqttClient();
-  }
-
-  server.begin();
-  if (modbusWasActive || deviceConfig.modbusEnable) {
-    modbusSetup();
-  }
-
-  // Telnet
-  telnetEnabled = (deviceConfig.telnetEnable != 0);
-  if (telnetEnabled) { telnetServer.begin(); telnetServer.setNoDelay(true); }
-
-  Serial.print(F("[FLASH] Current IP (STA): "));
-  Serial.println(WiFi.localIP());
+  // Avoid disconnecting from the AC: UART is completely independent of Wi-Fi.
+  WiFi.mode(WIFI_AP_STA);
+  startNonblockingConfigPortal();
 }
 
 static void handleFlashButton() {
@@ -2095,6 +2122,13 @@ pwmWriteCompat(RED_LED_PIN, val);
 // ======== FW UPDATE (upload .bin přes web) ========
 static volatile bool fw_in_progress = false;
 static String fw_result;
+static void resumeAfterFailedUpdate() {
+  fw_in_progress = false;
+  if(networkServicesStarted && WiFi.status()==WL_CONNECTED &&
+     deviceConfig.modbusEnable && modbusServerInitialized)
+    modbusActive = true;
+  Serial.println(F("[FW] Modbus and MQTT can resume after upload failure."));
+}
 
 static void handleFwPage() {
   if (!handleAuthentication()) return;
@@ -2121,6 +2155,9 @@ static void handleFwPage() {
   html += F("<div style='margin-top:12px'><a class='link' href='/'>⟵ Zpět na hlavní stránku</a></div>");
   html += F("</div></body></html>");
 
+  html.replace("<form method='POST' action='/fwupdate' enctype='multipart/form-data'>",
+       String("<form method='POST' action='/fwupdate' enctype='multipart/form-data'>"
+              "<input type='hidden' name='csrf' value='") + csrfNonce + "'>");
   server.send(200, "text/html", html);
 }
 
@@ -2150,6 +2187,8 @@ static void handleFwUpload() {
 
       if (!okBegin) {
         Update.printError(Serial);
+        fw_result = "ERROR";
+        resumeAfterFailedUpdate();
       }
     } break;
 
@@ -2170,6 +2209,7 @@ static void handleFwUpload() {
         Update.printError(Serial);
         fw_result = "ERROR";
       }
+      if(fw_result!="OK") resumeAfterFailedUpdate();
       fw_in_progress = false;
     } break;
 
@@ -2177,6 +2217,7 @@ static void handleFwUpload() {
       Update.end();
       fw_in_progress = false;
       fw_result = "ABORT";
+      resumeAfterFailedUpdate();
       Serial.println("FW: aborted.");
     } break;
   }
@@ -2185,6 +2226,11 @@ static void handleFwUpload() {
 // finální odpověď po POST (zde už víme výsledek). Restart děláme až po odeslání stránky.
 static void handleFwDone() {
   if (!handleAuthentication()) return;
+  if (!requireCsrf()) {
+    fw_result = "ERROR";
+    resumeAfterFailedUpdate();
+    return;
+  }
 
   String html;
   html.reserve(2000);
@@ -2234,11 +2280,15 @@ static void handleFactoryResetPage() {
             " <a class='btn' href='/'>Zpět</a>"
             "</form>"
             "</div></div>");
+  html.replace("<form method='POST' action='/factory-reset'>",
+       String("<form method='POST' action='/factory-reset'><input type='hidden' name='csrf' value='") +
+       csrfNonce + "'>");
   server.send(200, "text/html", html);
 }
 
 static void handleFactoryResetPost() {
   if (!handleAuthentication()) return;
+  if(!requireCsrf())return;
   if (server.hasArg("confirm") && server.arg("confirm") == "YES") {
     server.send(200, "text/plain", "Factory reset… restartuji.");
     server.client().stop();
@@ -2259,7 +2309,7 @@ static void applySavedPortalParameters() {
   strlcpy(deviceConfig.mqttServer, p_mqtt_server.getValue(), sizeof(deviceConfig.mqttServer));
   deviceConfig.mqttPort = (uint16_t)atoi(p_mqtt_port.getValue());
   strlcpy(deviceConfig.mqttUser, p_mqtt_user.getValue(), sizeof(deviceConfig.mqttUser));
-  strlcpy(deviceConfig.mqttPassword, p_mqtt_pass.getValue(), sizeof(deviceConfig.mqttPassword));
+  if (p_mqtt_pass.getValue()[0]) strlcpy(deviceConfig.mqttPassword, p_mqtt_pass.getValue(), sizeof(deviceConfig.mqttPassword));
   strlcpy(deviceConfig.mqttCmdTopic, p_mqtt_cmd.getValue(), sizeof(deviceConfig.mqttCmdTopic));
   strlcpy(deviceConfig.mqttStateTopic, p_mqtt_state.getValue(), sizeof(deviceConfig.mqttStateTopic));
   strlcpy(deviceConfig.mqttHeartbeatTopic, p_mqtt_hb.getValue(), sizeof(deviceConfig.mqttHeartbeatTopic));
@@ -2282,10 +2332,10 @@ static void applySavedPortalParameters() {
   }
 
   deviceConfig.otaEnable = (uint8_t)atoi(p_ota_en.getValue());
-  strlcpy(deviceConfig.otaPassword, p_ota_pass.getValue(), sizeof(deviceConfig.otaPassword));
+  if (p_ota_pass.getValue()[0]) strlcpy(deviceConfig.otaPassword, p_ota_pass.getValue(), sizeof(deviceConfig.otaPassword));
 
   deviceConfig.telnetEnable = (uint8_t)atoi(p_telnet_en.getValue());
-  strlcpy(deviceConfig.telnetPassword, p_telnet_pass.getValue(), sizeof(deviceConfig.telnetPassword));
+  if (p_telnet_pass.getValue()[0]) strlcpy(deviceConfig.telnetPassword, p_telnet_pass.getValue(), sizeof(deviceConfig.telnetPassword));
 
   saveConfig();
   computeDeviceID();
@@ -2345,6 +2395,7 @@ static void startNonblockingConfigPortal() {
   wifiManager.startConfigPortal(apName);
   if (wifiManager.getConfigPortalActive()) {
     wifiHadPortal = true;
+    wifiPortalOpenedAtMs = millis();
     Serial.printf("[WiFi] Config portal address: %s\n", WiFi.softAPIP().toString().c_str());
   } else {
     // Avoid tight-loop retry when the ESP cannot enable the AP.
@@ -2356,7 +2407,13 @@ static void startNonblockingConfigPortal() {
 static void maintainWiFiBoot() {
   const uint32_t now = millis();
   const bool wasPortalActive = wifiManager.getConfigPortalActive();
-  if (wasPortalActive) wifiManager.process();
+  if (wasPortalActive) {
+    wifiManager.process();
+    if (wifiPortalOpenedAtMs && millis()-wifiPortalOpenedAtMs >= 300000UL) {
+      wifiManager.stopConfigPortal();
+      Serial.println(F("[WiFi] Config portal closed after 5 minutes"));
+    }
+  }
 
   // Parameters were written by WiFiManager callback; commit outside callbacks.
   if (shouldSaveConfig) applySavedPortalParameters();
@@ -2431,6 +2488,7 @@ void setup() {
   }
 
   Serial.begin(115200);
+  initializeCsrfNonce();
   Serial.println();
   Serial.println(F("== Boot =="));
 
@@ -2473,7 +2531,7 @@ void setup() {
   char portStr[6]; snprintf(portStr, sizeof(portStr), "%u", deviceConfig.mqttPort);
   p_mqtt_port.setValue(portStr, sizeof(portStr));
   p_mqtt_user.setValue(deviceConfig.mqttUser, sizeof(deviceConfig.mqttUser));
-  p_mqtt_pass.setValue(deviceConfig.mqttPassword, sizeof(deviceConfig.mqttPassword));
+  p_mqtt_pass.setValue("", 1); // do not expose stored secrets in open setup portal
   p_mqtt_cmd.setValue(deviceConfig.mqttCmdTopic, sizeof(deviceConfig.mqttCmdTopic));
   p_mqtt_state.setValue(deviceConfig.mqttStateTopic, sizeof(deviceConfig.mqttStateTopic));
   p_mqtt_hb.setValue(deviceConfig.mqttHeartbeatTopic, sizeof(deviceConfig.mqttHeartbeatTopic));
@@ -2495,12 +2553,12 @@ void setup() {
   // OTA parametry
   char otaEnStr[2]; snprintf(otaEnStr, sizeof(otaEnStr), "%u", (unsigned)deviceConfig.otaEnable);
   p_ota_en.setValue(otaEnStr, sizeof(otaEnStr));
-  p_ota_pass.setValue(deviceConfig.otaPassword, sizeof(deviceConfig.otaPassword));
+  p_ota_pass.setValue("", 1);
 
   // Telnet parametry
   char tEnStr[2]; snprintf(tEnStr, sizeof(tEnStr), "%u", (unsigned)deviceConfig.telnetEnable);
   p_telnet_en.setValue(tEnStr, sizeof(tEnStr));
-  p_telnet_pass.setValue(deviceConfig.telnetPassword, sizeof(deviceConfig.telnetPassword));
+  p_telnet_pass.setValue("", 1);
 
   wifiManager.setSaveConfigCallback(saveConfigCallback);
 
@@ -2570,6 +2628,13 @@ void setup() {
 #endif
   server.on("/", handleRoot);
   server.on("/command", HTTP_POST, handleCommand);
+  server.on("/api/security", HTTP_GET, handleCsrfToken);
+  server.on("/api/restart", HTTP_POST, handleRestart);
+  server.on("/api/metrics", HTTP_GET, handleMetrics);
+  server.on("/api/config/backup", HTTP_GET, handleConfigBackup);
+  server.on("/api/config/import", HTTP_POST, handleConfigImport);
+  server.on("/api/extensions", HTTP_GET, handleExtensionsGet);
+  server.on("/api/extensions", HTTP_POST, handleExtensionsPost);
   server.on("/mqttconfig", HTTP_POST, handleMQTTConfig);
   server.on("/debug", handleDebug);
   server.on("/service", HTTP_GET, handleServicePage);
@@ -2578,6 +2643,16 @@ void setup() {
   server.on("/api/service/action", HTTP_POST, handleServiceAction);
   server.on("/app.css", handleAppCss);
   server.on("/app.js",  handleAppJs);
+  server.on("/lang/cs.json", HTTP_GET, []() {
+    if(!handleAuthentication())return;
+    server.sendHeader("Cache-Control","public, max-age=3600");
+    server.send(200,"application/json; charset=utf-8",FPSTR(LOCALE_CS));
+  });
+  server.on("/lang/en.json", HTTP_GET, []() {
+    if(!handleAuthentication())return;
+    server.sendHeader("Cache-Control","public, max-age=3600");
+    server.send(200,"application/json; charset=utf-8",FPSTR(LOCALE_EN));
+  });
 
     // --- Factory reset (chráněno web auth) ---
   server.on("/factory-reset", HTTP_GET,  handleFactoryResetPage);
@@ -2702,8 +2777,11 @@ void setup() {
 }
 
 void loop() {
+  const uint32_t loopStartMs=millis();
+  if(restartAfterMs && (int32_t)(millis()-restartAfterMs)>=0) ESP.restart();
   // Highest priority: the original Toshiba handshake and RX collector.
   hvac.handleHvac();
+  observeCapabilities();
   static bool hvacConnectLogged = false;
   if (hvac.isConnected() && !hvacConnectLogged) {
     hvacConnectLogged = true;
@@ -2728,7 +2806,11 @@ void loop() {
   if (networkServicesStarted && WiFi.status() == WL_CONNECTED && mqttEnabled &&
       (millis() - firmwareBootMs >= MQTT_BOOT_GUARD_MS)) {
     if (!mqttClient.connected()) connectToMQTT();
-    if (mqttClient.connected()) mqttClient.loop();
+    if (mqttClient.connected()) { mqttClient.loop(); if(discoveryPending){
+        discoveryPending=false;
+        if(extCfg.discovery)publishHaDiscovery();
+        else publishHaRemoval();
+      } }
   }
 
   if (networkServicesStarted && WiFi.status() == WL_CONNECTED) {
@@ -2738,16 +2820,20 @@ void loop() {
   handleFlashButton(); // manual portal remains accessible as before
 
   // Modbus obsluha
-  if (modbusActive) {
+  if (modbusActive && WiFi.status() == WL_CONNECTED) {
     mb.task();
     modbusApplyWrites();
   }
 
   uint32_t now = millis();
 
+  if(modbusActive && now-lastModbusSync >= 1000UL) {
+    modbusSyncFromHVAC();
+    modbusUpdateDiagnostics();
+    lastModbusSync=now;
+  }
   if (now - lastStatePub >= STATE_PUBLISH_MS) {
     publishState();
-    if (modbusActive) modbusSyncFromHVAC();
     lastStatePub = now;
   }
 
@@ -2783,9 +2869,11 @@ void loop() {
     } else if (!hvacConn) {
       digitalWrite(LED_PIN, (now / 500) % 2 ? LOW : HIGH);
     } else {
-      if (LED_PIN >= 0) digitalWrite(LED_PIN, LOW);                                 // OK = trvale svítí
+      digitalWrite(LED_PIN, LOW);                                 // OK = trvale svítí
     }
   }
 
+  const uint32_t duration=millis()-loopStartMs;
+  if(duration>maxLoopDurationMs)maxLoopDurationMs=duration;
   yield();
 }

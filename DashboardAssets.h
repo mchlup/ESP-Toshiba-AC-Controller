@@ -24,15 +24,16 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
       <span class="brand-name"><strong>TOSHIBA</strong><small>HVAC CONTROLLER</small></span>
     </a>
     <nav class="primary-nav" aria-label="Hlavní nabídka">
-      <button class="nav-item is-active" type="button" data-view="dashboard" aria-current="page">Ovládání</button>
-      <button class="nav-item" type="button" data-view="settings">Nastavení</button>
-      <a class="nav-item" href="/service">Servis</a>
-      <a class="nav-item" href="/debug">Diagnostika</a>
+      <button class="nav-item is-active" data-i18n="dashboard" type="button" data-view="dashboard" aria-current="page">Ovládání</button>
+      <button class="nav-item" data-i18n="settings" type="button" data-view="settings">Nastavení</button>
+      <a class="nav-item" data-i18n="service" href="/service">Servis</a>
+      <a class="nav-item" data-i18n="diagnostics" href="/debug">Diagnostika</a>
     </nav>
     <div class="top-actions">
       <span class="connection-pill" id="connectionPill" data-state="loading" role="status" aria-live="polite">
         <span class="status-light" aria-hidden="true"></span><span id="connectionText">Připojování</span>
       </span>
+      <label class="lang-switch" title="Language / Jazyk"><span class="sr-only">Jazyk / Language</span><select id="languageSelect" aria-label="Jazyk / Language"><option value="cs">Čeština</option><option value="en">English</option></select></label>
       <button class="icon-button" id="themeToggle" type="button" title="Přepnout vzhled" aria-label="Přepnout světlý a tmavý vzhled">◐</button>
     </div>
   </header>
@@ -52,7 +53,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
           <div class="card-head"><span class="section-label">TEPLOTA</span>
             <span class="chip chip-soft" id="modeCaption">—</span>
           </div>
-          <div class="setpoint-top"><p id="targetTitle">Požadovaná teplota</p>
+          <div class="setpoint-top"><p id="targetTitle" data-i18n="target">Požadovaná teplota</p>
             <div class="thermostat-controls">
               <button type="button" class="temp-adjust" id="tempDown" aria-label="Snížit teplotu o jeden stupeň" disabled>−</button>
               <output id="targetTemp" for="tempRange" class="target-value">--<span>°C</span></output>
@@ -99,7 +100,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
         </section>
 
         <section class="card fan-card" aria-labelledby="fanTitle">
-          <div class="card-head"><div><span class="section-label">VENTILÁTOR</span><h2 id="fanTitle">Rychlost proudění</h2></div>
+          <div class="card-head"><div><span class="section-label">VENTILÁTOR</span><h2 id="fanTitle" data-i18n="fan">Rychlost proudění</h2></div>
             <span class="chip chip-soft" id="fanCaption">—</span>
           </div>
           <div class="choice-grid fan-grid" role="group" aria-label="Rychlost ventilátoru">
@@ -113,7 +114,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
         </section>
 
         <section class="card swing-card" aria-labelledby="swingTitle">
-          <div class="card-head"><div><span class="section-label">LAMELY</span><h2 id="swingTitle">Směr proudění</h2></div><span class="chip chip-soft" id="swingCaption">—</span></div>
+          <div class="card-head"><div><span class="section-label">LAMELY</span><h2 id="swingTitle" data-i18n="swing">Směr proudění</h2></div><span class="chip chip-soft" id="swingCaption">—</span></div>
           <div class="choice-grid swing-grid" role="group" aria-label="Pohyb lamel">
             <button type="button" class="choice compact" data-cmd="SWING_OFF" data-match="fix" aria-pressed="false">Pevné</button>
             <button type="button" class="choice compact" data-cmd="SWING_V" data-match="v_swing" aria-pressed="false">Svisle</button>
@@ -141,8 +142,8 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
           <section class="card settings-card">
             <div class="card-head"><div><span class="section-label">IDENTITA</span><h2>Zařízení</h2></div></div>
             <div class="field-grid">
-              <label class="field">Název zařízení<input name="name" maxlength="31" placeholder="Klimatizace obývák"></label>
-              <label class="field">Místnost<input name="room" maxlength="31" placeholder="Obývák"></label>
+              <label class="field">Název zařízení<input name="name" maxlength="23" placeholder="Klimatizace obývák"></label>
+              <label class="field">Místnost<input name="room" maxlength="23" placeholder="Obývák"></label>
               <label class="field">Vlastní ID<select name="dev_id_en"><option value="0">Vypnuto (MAC)</option><option value="1">Zapnuto</option></select></label>
               <label class="field">Identifikátor<input name="dev_id" maxlength="12" placeholder="AC-OBYVAK"></label>
             </div>
@@ -154,17 +155,17 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
               <label class="field">Port<input name="port" type="number" min="1" max="65535" placeholder="1883"></label>
               <label class="field wide">Adresa brokeru<input name="server" maxlength="63" placeholder="192.168.1.10"></label>
               <label class="field">Uživatelské jméno<input name="user" maxlength="31"></label>
-              <label class="field">Heslo<input name="pass" type="password" maxlength="63" placeholder="Ponechat beze změny" autocomplete="new-password"></label>
-              <label class="field wide">Topic příkazů<input name="cmdtopic" maxlength="95" placeholder="toshiba/{id}/control"></label>
-              <label class="field wide">Topic stavu<input name="statetopic" maxlength="95" placeholder="toshiba/{id}/state"></label>
-              <label class="field wide">Topic heartbeat<input name="hbtopic" maxlength="95" placeholder="toshiba/{id}/heartbeat"></label>
+              <label class="field">Heslo<input name="pass" type="password" maxlength="39" placeholder="Ponechat beze změny" autocomplete="new-password"></label>
+              <label class="field wide">Topic příkazů<input name="cmdtopic" maxlength="63" placeholder="toshiba/{id}/control"></label>
+              <label class="field wide">Topic stavu<input name="statetopic" maxlength="63" placeholder="toshiba/{id}/state"></label>
+              <label class="field wide">Topic heartbeat<input name="hbtopic" maxlength="63" placeholder="toshiba/{id}/heartbeat"></label>
             </div>
           </section>
           <section class="card settings-card">
             <div class="card-head"><div><span class="section-label">PŘÍSTUP</span><h2>Zabezpečení WebUI</h2></div></div>
             <div class="field-grid">
-              <label class="field">Web uživatel<input name="webuser" maxlength="31" autocomplete="username"></label>
-              <label class="field">Nové webové heslo<input name="webpass" type="password" maxlength="63" placeholder="Ponechat beze změny" autocomplete="new-password"></label>
+              <label class="field">Web uživatel<input name="webuser" maxlength="19" autocomplete="username"></label>
+              <label class="field">Nové webové heslo<input name="webpass" type="password" maxlength="19" placeholder="Ponechat beze změny" autocomplete="new-password"></label>
             </div>
             <p class="hint">Rozhraní používá HTTP Basic ověřování. Nepřistupujte k němu přímo z veřejného internetu.</p>
           </section>
@@ -174,16 +175,36 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
               <label class="field">Modbus TCP<select name="mb_en"><option value="0">Vypnuto</option><option value="1">Zapnuto</option></select></label>
               <label class="field">Port Modbus<input id="modbusPort" type="text" value="502" readonly></label>
               <label class="field">Arduino OTA<select name="ota_en"><option value="0">Vypnuto</option><option value="1">Zapnuto</option></select></label>
-              <label class="field">Heslo OTA<input name="ota_pass" type="password" maxlength="63" placeholder="Ponechat beze změny"></label>
+              <label class="field">Heslo OTA<input name="ota_pass" type="password" maxlength="31" placeholder="Ponechat beze změny"></label>
               <label class="field">Telnet<select name="telnet_en"><option value="0">Vypnuto</option><option value="1">Zapnuto</option></select></label>
-              <label class="field">Heslo Telnet<input name="telnet_pass" type="password" maxlength="63" placeholder="Ponechat beze změny"></label>
+              <label class="field">Heslo Telnet<input name="telnet_pass" type="password" maxlength="15" placeholder="Ponechat beze změny"></label>
             </div>
           </section>
+<section class="card settings-card" id="capabilityCard">
+  <div class="card-head"><div><span class="section-label">HOME ASSISTANT</span><h2 data-i18n="capabilities">Podporované funkce</h2></div></div>
+  <div class="field-grid"><label class="field"><span data-i18n="ha_discovery">Home Assistant Discovery</span>
+    <select id="haDiscovery"><option value="0">Off</option><option value="1">On</option></select></label></div>
+  <p class="hint" data-i18n="features_note">Neověřené funkce zůstávají dostupné. Nepodporované jsou skryty v Discovery.</p>
+  <div id="capabilityList" class="capability-list" aria-live="polite"></div>
+  <button class="btn btn-primary" type="button" id="saveCapabilities" data-i18n="apply">Uložit</button>
+</section>
+<section class="card settings-card">
+  <div class="card-head"><div><span class="section-label">SYSTEM</span><h2 data-i18n="device">Zařízení</h2></div></div>
+  <p class="hint">Restart ESP nevymaže konfiguraci a neodesílá příkaz vypnutí klimatizace.</p>
+  <button class="btn btn-danger" type="button" id="restartDevice" data-i18n="restart">Restartovat zařízení</button>
+  <hr class="settings-divider">
+  <div class="card-head"><h2 data-i18n="config_backup">Záloha konfigurace</h2></div>
+  <p class="hint" data-i18n="backup_note">Export nezahrnuje hesla ani přihlašovací údaje Wi-Fi.</p>
+  <a class="btn" href="/api/config/backup" download="toshiba-config.json" data-i18n="download_backup">Stáhnout zálohu</a>
+  <label class="field"><span data-i18n="select_backup">Import JSON konfigurace</span>
+    <input type="file" id="importFile" accept="application/json,.json"></label>
+  <button class="btn btn-ghost" type="button" id="restoreSettings" data-i18n="restore_backup">Obnovit konfiguraci</button>
+</section>
         </div>
         <div class="settings-actions">
           <span id="settingsMessage" class="muted" role="status" aria-live="polite">Změny budou použity po uložení.</span>
           <button type="button" class="btn btn-ghost" id="reloadSettings">Znovu načíst</button>
-          <button type="submit" class="btn btn-primary" id="saveSettings">Uložit nastavení →</button>
+          <button type="submit" class="btn btn-primary" id="saveSettings" data-i18n="save">Uložit nastavení →</button>
         </div>
       </form>
     </section>

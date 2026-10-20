@@ -1,0 +1,29 @@
+name: Firmware build
+on:
+  push:
+    branches:
+      - main
+      - 'improvement/**'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: firmware-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [esp8266_d1mini, esp32dev, esp32c3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install PlatformIO
+        run: python -m pip install platformio
+      - name: Build firmware
+        run: pio run -e ${{ matrix.board }}

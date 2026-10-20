@@ -1001,6 +1001,13 @@ bool ToshibaCarrierHvac::processData(byte data[], size_t dataLen) {
     return false;
 }
 
+// Protocol frame recognized != changed HVAC property.
+// Parsing duplicate feedback is normal and must not increment RX errors.
+bool ToshibaCarrierHvac::knownFunction(byte command) {
+    for (size_t i=0; i<sizeof(FUNCTION_BYTE); ++i)
+        if (FUNCTION_BYTE[i] == command) return true;
+    return false;
+}
 bool ToshibaCarrierHvac::readPacket(byte data[], size_t dataLen) {
     if (dataLen < 8 || dataLen != static_cast<size_t>(data[6]) + 8) return false;
     if (data[3] == getByteByName(PACKET_TYPE, PACKET_TYPE_MAP, sizeof(PACKET_TYPE), "FEEDBACK")) {  // feedback
@@ -1030,7 +1037,9 @@ bool ToshibaCarrierHvac::readPacket(byte data[], size_t dataLen) {
             HvacRawAnalyzer_onFrame(false, cmd, payload, plen);
         }
         
-        return processData(newData, data[11]);
+        const bool stateChanged = processData(newData, data[11]);
+        if (stateChanged) ++_stateChanges;
+        return stateChanged || (_connected && knownFunction(newData[0]));
     } else if (data[3] == getByteByName(PACKET_TYPE, PACKET_TYPE_MAP, sizeof(PACKET_TYPE), "REPLY")) {  // reply
         if (dataLen < 15 || data[13] == 0 || data[13] > dataLen-15 || data[13] > 16) return false;
         byte newData[16];
@@ -1052,7 +1061,9 @@ bool ToshibaCarrierHvac::readPacket(byte data[], size_t dataLen) {
             HvacRawAnalyzer_onFrame(false, cmd, payload, plen);
         }
         
-        return processData(newData, data[13]);
+        const bool stateChanged = processData(newData, data[13]);
+        if (stateChanged) ++_stateChanges;
+        return stateChanged || (_connected && knownFunction(newData[0]));
     } else if (data[3] == getByteByName(PACKET_TYPE, PACKET_TYPE_MAP, sizeof(PACKET_TYPE), "SYN/ACK")) {    // syn/ack
         #ifdef HVAC_DEBUG
         DEBUG_PORT.println(F("HVAC> Received handshake SYN/ACK"));
