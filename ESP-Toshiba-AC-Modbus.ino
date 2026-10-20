@@ -2358,7 +2358,9 @@ static void handleFwPage() {
             "</head><body><div class='container'>"
             "<div class='card' style='grid-column:span 12'>"
             "<h3>Aktualizace firmware</h3>"
-            "<form method='POST' action='/fwupdate?csrf=" + String(csrfToken) + "' enctype='multipart/form-data'>"
+            "<form method='POST' action='/fwupdate?csrf=");
+  html += csrfToken;
+  html += F("' enctype='multipart/form-data'>"
             "<input class='btn' type='file' name='fw' accept='.bin' required>"
             " <button class='btn primary' type='submit'>Nahrát a aktualizovat</button>"
             "</form>"
@@ -2493,7 +2495,9 @@ static void handleFactoryResetPage() {
             "<p>Tato akce <b>nevratně</b> smaže konfiguraci zařízení (EEPROM) a Wi-Fi přihlašovací údaje."
             " Po restartu se otevře konfigurační AP portál.</p>"
             "<form method='POST' action='/factory-reset'>"
-            "<input type='hidden' name='csrf' value='" + String(csrfToken) + "'>"
+            "<input type='hidden' name='csrf' value='");
+  html += csrfToken;
+  html += F("'>"
             "<button class='btn bad' type='submit' name='confirm' value='YES'>Provést Factory Reset</button>"
             " <a class='btn' href='/'>Zpět</a>"
             "</form>"
