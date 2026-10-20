@@ -289,6 +289,7 @@ uint32_t lastHeartbeat = 0;
 uint32_t lastStatePub = 0;
 bool mqttEnabled = false;          // výchozí OFF
 int  mqttFailCount = 0;
+static uint32_t mqttConnectCount=0;
 uint32_t lastMqttAttempt = 0;
 volatile bool otaActive = false;   // << oprava: start na false
 uint32_t      otaStartMs = 0;
@@ -737,19 +738,22 @@ struct PendingHreg {
   uint32_t startedMs = 0;
   bool active = false;
 };
-static PendingHreg g_pendingHreg[5];       // HREG_POWER through HREG_SWING
+static PendingHreg g_pendingHreg[5];
+static uint16_t lastCommandStatus=0; // 0 idle,1 requested,2 confirmed,3 timeout       // HREG_POWER through HREG_SWING
 static const uint32_t MODBUS_CONFIRM_TIMEOUT_MS = 10000UL;
 static void rememberRequestedHreg(uint16_t reg, uint16_t value) {
   if (reg > HREG_SWING) return;
   g_pendingHreg[reg].value = value;
   g_pendingHreg[reg].startedMs = millis();
   g_pendingHreg[reg].active = true;
+  lastCommandStatus=1;
 }
 static uint16_t exportedHreg(uint16_t reg, uint16_t actual) {
   if (reg > HREG_SWING) return actual;
   PendingHreg &p = g_pendingHreg[reg];
   if (!p.active) return actual;
   if (actual == p.value || millis() - p.startedMs >= MODBUS_CONFIRM_TIMEOUT_MS) {
+    lastCommandStatus=(actual == p.value)?2:3;
     p.active = false;
     return actual;
   }
@@ -1027,6 +1031,7 @@ static void connectToMQTT() {
 
   if (ok) {
     mqttFailCount = 0;
+    ++mqttConnectCount;
     discoveryPending = true;
     mqttClient.publish(statusTopic, "online", true);
     char cmdTopic[96]; expandTopic(deviceConfig.mqttCmdTopic, cmdTopic, sizeof(cmdTopic));
@@ -1353,6 +1358,8 @@ static void modbusApplyWrites() {
   }
 }
 
+#include "ModbusDiagnostics.h"
+
 static bool modbusServerInitialized = false;
 static void modbusSetup() {
   if (modbusServerInitialized) {
@@ -1372,6 +1379,7 @@ static void modbusSetup() {
   for (uint16_t r = 0; r < HREG__COUNT; ++r) {
     hregCache[r] = mb.Hreg(r);
   }
+  modbusAddDiagnostics();
   modbusServerInitialized = true;
   Serial.printf("Modbus TCP server ON (port 502, unit %u - info only)\n", deviceConfig.modbusUnitId);
 }
@@ -2561,6 +2569,7 @@ void setup() {
   server.on("/", handleRoot);
   server.on("/command", HTTP_POST, handleCommand);
   server.on("/api/restart", HTTP_POST, handleRestart);
+  server.on("/api/metrics", HTTP_GET, handleMetrics);
   server.on("/api/extensions", HTTP_GET, handleExtensionsGet);
   server.on("/api/extensions", HTTP_POST, handleExtensionsPost);
   server.on("/mqttconfig", HTTP_POST, handleMQTTConfig);
@@ -2705,6 +2714,7 @@ void setup() {
 }
 
 void loop() {
+  const uint32_t loopStartMs=millis();
   if(restartAfterMs && (int32_t)(millis()-restartAfterMs)>=0) ESP.restart();
   // Highest priority: the original Toshiba handshake and RX collector.
   hvac.handleHvac();
@@ -2756,7 +2766,7 @@ void loop() {
 
   if (now - lastStatePub >= STATE_PUBLISH_MS) {
     publishState();
-    if (modbusActive) modbusSyncFromHVAC();
+    if (modbusActive) { modbusSyncFromHVAC(); modbusUpdateDiagnostics(); }
     lastStatePub = now;
   }
 
@@ -2796,5 +2806,7 @@ void loop() {
     }
   }
 
+  const uint32_t duration=millis()-loopStartMs;
+  if(duration>maxLoopDurationMs)maxLoopDurationMs=duration;
   yield();
 }
