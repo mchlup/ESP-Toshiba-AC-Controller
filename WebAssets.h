@@ -111,6 +111,10 @@ h2{font-size:17px;font-weight:740;letter-spacing:-.025em;margin:5px 0 0}.page-he
 .capability-list{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:15px 0}
 .btn-danger{background:var(--danger);color:white;border-color:var(--danger);margin-top:16px}
 @media(max-width:620px){.capability-list{grid-template-columns:1fr}.lang-switch select{max-width:92px;font-size:11px}}
+.settings-divider{border:0;border-top:1px solid var(--line);margin:23px 0}
+#restoreSettings{margin-top:10px}
+#capabilityCard #capabilityList{margin-bottom:18px}
+:root{--card:var(--surface);--border:var(--line);--fg:var(--ink);--ok:var(--good);--bad:var(--danger)}
 )CSS";
 
 // Dashboard v2: dependency-free event-driven controls, API compatible.
@@ -343,6 +347,25 @@ $('restartDevice').addEventListener('click',async()=>{
   }catch(err){toast('Restart: '+err.message,'error');}
 });
 loadExtensions();
+$('restoreSettings').addEventListener('click',async()=>{
+  const file=$('importFile').files[0];
+  if(!file){toast(translations.select_backup||'Vyberte JSON soubor.','error');return;}
+  if(file.size>3400){toast('Záloha je příliš velká.','error');return;}
+  if(!confirm(translations.restore_confirm||'Nahrát konfiguraci ze zálohy? Hesla zůstanou beze změny.'))return;
+  try{
+    const payload=await file.text();
+    const parsed=JSON.parse(payload);
+    if(parsed.schema!==1)throw new Error('Unsupported backup schema');
+    const body=new URLSearchParams({backup:payload});
+    await request('/api/config/import',{method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},
+      body:body.toString()});
+    toast(translations.restore_success||'Konfigurace obnovena.');
+    loadedSettings=false;
+    await loadSettings();
+    await loadExtensions();
+  }catch(error){toast('Obnovení: '+error.message,'error');}
+});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll();});
 poll();setInterval(poll,3000);
 })();
