@@ -64,8 +64,8 @@ void HvacRawAnalyzer_onFrame(bool tx, uint8_t cmd, const uint8_t* payload, uint8
 // ================== HW & BUILD CONFIG ==================
 #if defined(ESP8266)
   // NodeMCU / Wemos D1 mini: osvědčené piny pro SW/HW serial
-  #define RX_PIN         15      // D6 (GPIO12)
-  #define TX_PIN         13      // D5 (GPIO14)
+  #define RX_PIN         15      // GPIO15; test wiring (D8 on D1 mini)
+  #define TX_PIN         13      // GPIO13; test wiring (D7 on D1 mini)
   #define LED_PIN         2      // D4 (GPIO2), active LOW
   #define FLASH_BTN_PIN   0      // D3 (GPIO0) – FLASH
 #elif defined(ESP32)
