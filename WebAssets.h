@@ -106,6 +106,11 @@ h2{font-size:17px;font-weight:740;letter-spacing:-.025em;margin:5px 0 0}.page-he
 @media(max-width:355px){.brand-name small{display:none}.brand-symbol{width:35px;height:35px}.connection-pill{padding:8px}.choice-grid-five{grid-template-columns:repeat(3,1fr)}.temp-adjust{width:37px;height:37px}.target-value{font-size:61px;min-width:130px}.thermostat-controls{gap:5px}.thermostat-note{font-size:10px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;animation:none!important;transition:none!important}}
 
+.lang-switch select{min-height:39px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--ink);padding:7px}
+.sr-only{position:absolute;clip:rect(0,0,0,0);width:1px;height:1px;overflow:hidden}
+.capability-list{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:15px 0}
+.btn-danger{background:var(--danger);color:white;border-color:var(--danger);margin-top:16px}
+@media(max-width:620px){.capability-list{grid-template-columns:1fr}.lang-switch select{max-width:92px;font-size:11px}}
 )CSS";
 
 // Dashboard v2: dependency-free event-driven controls, API compatible.
@@ -263,6 +268,65 @@ $('settingsForm').addEventListener('submit',async event=>{
   }catch(err){notice.textContent='Chyba uložení: '+err.message;toast('Nastavení nebylo uloženo.','error');}
   finally{save.disabled=false;}
 });
+const capabilityNames=['swing_v','swing_h','swing_both','swing_fixed','pure','power_select','special_operation'];
+const capLabels={swing_v:'Svislé lamely',swing_h:'Vodorovné lamely',swing_both:'Obě osy',swing_fixed:'Pevná poloha 1–5',pure:'PURE / ionizace',power_select:'Power Select',special_operation:'Speciální režimy'};
+let translations={};
+async function setLanguage(locale){
+  const lang=(locale==='en'?'en':'cs');
+  try{
+    const response=await request('/lang/'+lang+'.json');
+    translations=await response.json();
+    $('[data-i18n]').forEach(el=>{
+      if(translations[el.dataset.i18n])el.textContent=translations[el.dataset.i18n];
+    });
+    document.documentElement.lang=lang;
+    $('languageSelect').value=lang;
+    localStorage.setItem('toshiba_ui_lang',lang);
+  }catch(error){toast('Language pack unavailable: '+error.message,'error');}
+}
+$('languageSelect').addEventListener('change',event=>setLanguage(event.target.value));
+const initialLang=(()=>{try{return localStorage.getItem('toshiba_ui_lang')||navigator.language.slice(0,2);}catch(_){return 'cs';}})();
+setLanguage(initialLang);
+async function loadExtensions(){
+  try{
+    const data=await(await request('/api/extensions')).json();
+    $('haDiscovery').value=String(data.discovery?1:0);
+    const container=$('capabilityList');
+    container.replaceChildren();
+    capabilityNames.forEach(name=>{
+      const wrap=document.createElement('label');wrap.className='field';
+      const caption=document.createElement('span');caption.textContent=capLabels[name];
+      const select=document.createElement('select');select.dataset.capability=name;
+      [[0,translations.cap_unknown||'Neověřeno'],[1,translations.cap_yes||'Podporováno'],[2,translations.cap_no||'Nepodporováno']].forEach(([value,label])=>{
+        const o=document.createElement('option');o.value=String(value);o.textContent=label;select.appendChild(o);
+      });
+      select.value=({unknown:'0',supported:'1',unsupported:'2'})[data.capabilities?.[name]]||'0';
+      wrap.append(caption,select);container.appendChild(wrap);
+    });
+  }catch(err){toast('Capabilities: '+err.message,'error');}
+}
+$('saveCapabilities').addEventListener('click',async()=>{
+  const btn=$('saveCapabilities');btn.disabled=true;
+  try{
+    let discovery=$('haDiscovery').value;
+    const updates=[new URLSearchParams({discovery})];
+    $('[data-capability]').forEach(el=>updates.push(new URLSearchParams({feature:el.dataset.capability,status:el.value})));
+    for(const body of updates){
+      await request('/api/extensions',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},body:body.toString()});
+    }
+    toast(translations.apply||'Uloženo');loadExtensions();
+  }catch(err){toast('Capability Manager: '+err.message,'error');}
+  finally{btn.disabled=false;}
+});
+$('restartDevice').addEventListener('click',async()=>{
+  if(!confirm(translations.restart_confirm||'Opravdu restartovat ESP?'))return;
+  try{
+    await request('/api/restart',{method:'POST',headers:{'X-Requested-With':'XMLHttpRequest'}});
+    toast(translations.restart_sent||'ESP se restartuje.');
+    updatePill('loading','Restart…');
+  }catch(err){toast('Restart: '+err.message,'error');}
+});
+loadExtensions();
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll();});
 poll();setInterval(poll,3000);
 })();
