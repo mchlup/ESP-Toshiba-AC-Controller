@@ -2124,6 +2124,9 @@ static void handleFwPage() {
   html += F("<div style='margin-top:12px'><a class='link' href='/'>⟵ Zpět na hlavní stránku</a></div>");
   html += F("</div></body></html>");
 
+  html.replace("<form method='POST' action='/fwupdate' enctype='multipart/form-data'>",
+       String("<form method='POST' action='/fwupdate' enctype='multipart/form-data'>"
+              "<input type='hidden' name='csrf' value='") + csrfNonce + "'>");
   server.send(200, "text/html", html);
 }
 
@@ -2192,6 +2195,11 @@ static void handleFwUpload() {
 // finální odpověď po POST (zde už víme výsledek). Restart děláme až po odeslání stránky.
 static void handleFwDone() {
   if (!handleAuthentication()) return;
+  if (!requireCsrf()) {
+    fw_result = "ERROR";
+    resumeAfterFailedUpdate();
+    return;
+  }
 
   String html;
   html.reserve(2000);
@@ -2241,6 +2249,9 @@ static void handleFactoryResetPage() {
             " <a class='btn' href='/'>Zpět</a>"
             "</form>"
             "</div></div>");
+  html.replace("<form method='POST' action='/factory-reset'>",
+       String("<form method='POST' action='/factory-reset'><input type='hidden' name='csrf' value='") +
+       csrfNonce + "'>");
   server.send(200, "text/html", html);
 }
 
