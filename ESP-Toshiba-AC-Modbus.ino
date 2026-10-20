@@ -2358,7 +2358,7 @@ static void handleFwPage() {
             "</head><body><div class='container'>"
             "<div class='card' style='grid-column:span 12'>"
             "<h3>Aktualizace firmware</h3>"
-            "<form method='POST' action='/fwupdate' enctype='multipart/form-data'>"
+            "<form method='POST' action='/fwupdate?csrf=" + String(csrfToken) + "' enctype='multipart/form-data'>"
             "<input class='btn' type='file' name='fw' accept='.bin' required>"
             " <button class='btn primary' type='submit'>Nahrát a aktualizovat</button>"
             "</form>"
@@ -2376,7 +2376,10 @@ static void handleFwPage() {
 
 // callback z ESP8266WebServer při POST /fwupdate – streamuje data do Update.write()
 static void handleFwUpload() {
-  if (!handleAuthentication()) return; // jistota – i během streamu
+  if (!handleAuthentication()) return;
+  if (!server.hasArg("csrf") || server.arg("csrf") != csrfToken) {
+    server.send(403,"text/plain","Invalid firmware upload token");return;
+  }
   HTTPUpload &up = server.upload();
 
   switch (up.status) {
@@ -2435,6 +2438,9 @@ static void handleFwUpload() {
 // finální odpověď po POST (zde už víme výsledek). Restart děláme až po odeslání stránky.
 static void handleFwDone() {
   if (!handleAuthentication()) return;
+  if (!server.hasArg("csrf") || server.arg("csrf") != csrfToken) {
+    server.send(403,"text/plain","Invalid firmware upload token");return;
+  }
 
   String html;
   html.reserve(2000);
@@ -2487,6 +2493,7 @@ static void handleFactoryResetPage() {
             "<p>Tato akce <b>nevratně</b> smaže konfiguraci zařízení (EEPROM) a Wi-Fi přihlašovací údaje."
             " Po restartu se otevře konfigurační AP portál.</p>"
             "<form method='POST' action='/factory-reset'>"
+            "<input type='hidden' name='csrf' value='" + String(csrfToken) + "'>"
             "<button class='btn bad' type='submit' name='confirm' value='YES'>Provést Factory Reset</button>"
             " <a class='btn' href='/'>Zpět</a>"
             "</form>"
@@ -2496,6 +2503,9 @@ static void handleFactoryResetPage() {
 
 static void handleFactoryResetPost() {
   if (!handleAuthentication()) return;
+  if (!server.hasArg("csrf") || server.arg("csrf") != csrfToken) {
+    server.send(403,"text/plain","Invalid CSRF token");return;
+  }
   if (server.hasArg("confirm") && server.arg("confirm") == "YES") {
     server.send(200, "text/plain", "Factory reset… restartuji.");
     server.client().stop();
