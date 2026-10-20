@@ -1424,6 +1424,74 @@ static void handleRoot() {
 }
 
 
+// Feature API is separated from legacy EEPROM DeviceConfig.
+static void handleFeaturesGet() {
+  if (!handleAuthentication()) return;
+  StaticJsonDocument<768> doc;
+  doc["ha_discovery"] = featureOptions.haDiscovery != 0;
+  doc["ha_available"] = mqttEnabled && mqttClient.connected();
+  JsonObject capabilities=doc.createNestedObject("capabilities");
+  JsonObject observed=doc.createNestedObject("observed");
+  const char* swing = nz(hvac.getSwing());
+  const char* pure = nz(hvac.getPure());
+  const char* psel = nz(hvac.getPowerSelect());
+  const char* op = nz(hvac.getOperation());
+  for (uint8_t i=0;i<CAP_COUNT;i++) {
+    capabilities[CAPABILITY_KEYS[i]]=capabilityStateName(featureOptions.capability[i]);
+    bool known = false;
+    switch (i) {
+      case CAP_SWING_FIXED: known = !strcmp(swing,"fix");break;
+      case CAP_SWING_VERTICAL: known = !strcmp(swing,"v_swing");break;
+      case CAP_SWING_HORIZONTAL: known = !strcmp(swing,"h_swing");break;
+      case CAP_SWING_BOTH: known = !strcmp(swing,"hv_swing");break;
+      case CAP_SWING_POSITIONS: known = !strncmp(swing,"fix_pos_",8);break;
+      case CAP_PURE: known = strcmp(pure,"UNKNOWN") && *pure;break;
+      case CAP_POWER_SELECT: known = strcmp(psel,"UNKNOWN") && *psel;break;
+      case CAP_OPERATION: known = strcmp(op,"UNKNOWN") && *op;break;
+      case CAP_WIFI_LED: known = strcmp(nz(hvac.getWifiLed()),"UNKNOWN") != 0 && *nz(hvac.getWifiLed());break;
+    }
+    observed[CAPABILITY_KEYS[i]]=known;
+  }
+  String out;
+  serializeJson(doc,out);
+  server.sendHeader("Cache-Control","no-store");
+  server.send(200,"application/json; charset=utf-8",out);
+}
+static void handleFeaturesSave() {
+  if (!handleAuthentication()) return;
+  if (server.header("X-Requested-With") != "XMLHttpRequest") {
+    server.send(403,"text/plain","Invalid request");return;
+  }
+  FeatureOptions next=featureOptions;
+  if (server.hasArg("ha_discovery")) {
+    String val=server.arg("ha_discovery");
+    if (val != "0" && val != "1") { server.send(400,"text/plain","Invalid HA option");return; }
+    next.haDiscovery=val=="1";
+  }
+  for (uint8_t i=0;i<CAP_COUNT;i++) {
+    if (!server.hasArg(CAPABILITY_KEYS[i])) continue;
+    const String val=server.arg(CAPABILITY_KEYS[i]);
+    if (val=="auto") next.capability[i]=CAP_AUTO;
+    else if (val=="supported") next.capability[i]=CAP_SUPPORTED;
+    else if (val=="unsupported") next.capability[i]=CAP_UNSUPPORTED;
+    else { server.send(400,"text/plain","Invalid capability"); return; }
+  }
+  featureOptions=next;
+  saveFeatureOptions();
+  featureDirty=true;
+  server.send(200,"application/json","{\"saved\":true}");
+}
+static void handleRestart() {
+  if (!handleAuthentication()) return;
+  if (server.header("X-Requested-With") != "XMLHttpRequest" ||
+      !server.hasArg("confirm") || server.arg("confirm") != "YES") {
+    server.send(403,"text/plain","Restart requires explicit confirmation");
+    return;
+  }
+  restartRequestedMs = millis();
+  server.send(202,"application/json","{\"restarting\":true}");
+}
+
 static void handleCommand() {
   if (!handleAuthentication()) return;
   if (server.header("X-Requested-With") != "XMLHttpRequest") {
@@ -1735,6 +1803,9 @@ static void handleServiceState() {
   else diag["rssi_dbm"] = nullptr;
   diag["mqtt_connected"] = mqttEnabled && mqttClient.connected();
   diag["modbus_active"] = modbusActive;
+  diag["modbus_writes"] = modbusClientWrites;
+  diag["modbus_invalid_writes"] = modbusRejectedWrites;
+  diag["mqtt_reconnects"] = mqttReconnectCount;
   diag["free_heap"] = ESP.getFreeHeap();
   diag["sniff_enabled"] = g_sniffEnabled;
   diag["raw_tx"] = g_txFrames;
@@ -2589,6 +2660,9 @@ void setup() {
 #endif
   server.on("/", handleRoot);
   server.on("/command", HTTP_POST, handleCommand);
+  server.on("/api/restart", HTTP_POST, handleRestart);
+  server.on("/api/features", HTTP_GET, handleFeaturesGet);
+  server.on("/api/features", HTTP_POST, handleFeaturesSave);
   server.on("/mqttconfig", HTTP_POST, handleMQTTConfig);
   server.on("/debug", handleDebug);
   server.on("/service", HTTP_GET, handleServicePage);
@@ -2668,6 +2742,7 @@ void setup() {
     else doc["uart_last_rx_age_ms"] = nullptr;
     doc["wifi_connected"] = WiFi.status() == WL_CONNECTED;
     doc["mqtt_connected"] = mqttEnabled && mqttClient.connected();
+    doc["ha_discovery"] = featureOptions.haDiscovery != 0;
     doc["oper"]  = hvacOperatingState();
     float tin, tout;
     if (hvacReadRoomTemp(tin)  && !isnan(tin))  doc["t_in"]  = tin;
@@ -2721,6 +2796,10 @@ void setup() {
 }
 
 void loop() {
+  if (restartRequestedMs && millis() - restartRequestedMs >= 800) {
+    Serial.println(F("[SYS] Restart requested through WebUI"));
+    ESP.restart();
+  }
   // Highest priority: the original Toshiba handshake and RX collector.
   hvac.handleHvac();
   static bool hvacConnectLogged = false;
