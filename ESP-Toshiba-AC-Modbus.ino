@@ -1531,6 +1531,8 @@ static void handleMQTTConfig() {
   server.send(200, "text/html", resp);
 }
 
+#include "ConfigBackup.h"
+
 static void handleDebug() {
   if (!handleAuthentication()) return;
 
@@ -2600,6 +2602,8 @@ void setup() {
   server.on("/api/security", HTTP_GET, handleCsrfToken);
   server.on("/api/restart", HTTP_POST, handleRestart);
   server.on("/api/metrics", HTTP_GET, handleMetrics);
+  server.on("/api/config/backup", HTTP_GET, handleConfigBackup);
+  server.on("/api/config/import", HTTP_POST, handleConfigImport);
   server.on("/api/extensions", HTTP_GET, handleExtensionsGet);
   server.on("/api/extensions", HTTP_POST, handleExtensionsPost);
   server.on("/mqttconfig", HTTP_POST, handleMQTTConfig);
