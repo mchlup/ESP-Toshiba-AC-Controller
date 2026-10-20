@@ -156,8 +156,18 @@ async function update(){
     }
   } catch(e){ message('Nepodarilo se nacist servisni stav: '+e.message,true); }
 }
+let serviceCsrfPromise;
+async function serviceCsrf(){
+  if(!serviceCsrfPromise){
+    serviceCsrfPromise=fetch('/api/security',{credentials:'same-origin',cache:'no-store'})
+      .then(async res=>{if(!res.ok)throw new Error('HTTP '+res.status);return (await res.json()).csrf;})
+      .catch(error=>{serviceCsrfPromise=null;throw error;});
+  }
+  return serviceCsrfPromise;
+}
 async function action(name,field,value){
   const data=new URLSearchParams({action:name});
+  data.set('csrf',await serviceCsrf());
   if(field!==undefined)data.set('field',field);
   if(value!==undefined)data.set('value',value);
   const res=await fetch('/api/service/action',{
