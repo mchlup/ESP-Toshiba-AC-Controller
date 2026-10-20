@@ -1451,6 +1451,111 @@ static void handleLocaleEn() {
   server.send(200,"application/json; charset=utf-8",FPSTR(LOCALE_EN));
 }
 
+static void handleConfigBackup() {
+  if (!handleAuthentication()) return;
+  DynamicJsonDocument doc(1536);
+  doc["schema"] = 1;
+  doc["device_id"] = deviceID;
+  doc["server"] = deviceConfig.mqttServer;
+  doc["port"] = deviceConfig.mqttPort;
+  doc["mqtt_en"] = deviceConfig.mqttEnable;
+  doc["user"] = deviceConfig.mqttUser;
+  doc["cmdtopic"] = deviceConfig.mqttCmdTopic;
+  doc["statetopic"] = deviceConfig.mqttStateTopic;
+  doc["hbtopic"] = deviceConfig.mqttHeartbeatTopic;
+  doc["webuser"] = deviceConfig.webUser;
+  doc["dev_id_en"] = deviceConfig.useCustomId;
+  doc["dev_id"] = deviceConfig.customDeviceId;
+  doc["room"] = deviceConfig.room;
+  doc["name"] = deviceConfig.unitName;
+  doc["mb_en"] = deviceConfig.modbusEnable;
+  doc["ota_en"] = deviceConfig.otaEnable;
+  doc["telnet_en"] = deviceConfig.telnetEnable;
+  doc["ha_discovery"] = featureOptions.haDiscovery;
+  JsonObject cap = doc.createNestedObject("capabilities");
+  for (uint8_t i=0;i<CAP_COUNT;++i)
+    cap[CAPABILITY_KEYS[i]] = capabilityStateName(featureOptions.capability[i]);
+  String out;serializeJson(doc,out);
+  server.sendHeader("Content-Disposition", "attachment; filename=toshiba-settings.json");
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200,"application/json",out);
+}
+static void handleConfigRestore() {
+  if (!handleAuthentication()) return;
+  if (!validCsrf()) { server.send(403,"text/plain","CSRF token required");return; }
+  if (!server.hasArg("plain") || server.arg("plain").length() > 3000) {
+    server.send(400,"text/plain","Missing or oversized JSON body");return;
+  }
+  DynamicJsonDocument doc(2048);
+  auto error=deserializeJson(doc,server.arg("plain"));
+  if (error || doc["schema"] != 1) {
+    server.send(400,"text/plain","Unsupported backup schema");return;
+  }
+  DeviceConfig next=deviceConfig;
+  FeatureOptions nextFeatures=featureOptions;
+  const char* strKeys[]={"server","user","cmdtopic","statetopic","hbtopic","webuser","dev_id","room","name"};
+  char* destinations[]={next.mqttServer,next.mqttUser,next.mqttCmdTopic,
+    next.mqttStateTopic,next.mqttHeartbeatTopic,next.webUser,next.customDeviceId,
+    next.room,next.unitName};
+  const size_t limits[]={sizeof(next.mqttServer),sizeof(next.mqttUser),sizeof(next.mqttCmdTopic),
+    sizeof(next.mqttStateTopic),sizeof(next.mqttHeartbeatTopic),sizeof(next.webUser),
+    sizeof(next.customDeviceId),sizeof(next.room),sizeof(next.unitName)};
+  for (size_t i=0;i<sizeof(strKeys)/sizeof(strKeys[0]);++i) {
+    if (!doc.containsKey(strKeys[i])) continue;
+    if (!doc[strKeys[i]].is<const char*>()) {
+      server.send(400,"text/plain","Invalid text field");return;
+    }
+    const char* value=doc[strKeys[i]].as<const char*>();
+    if (strlen(value) >= limits[i]) {
+      server.send(400,"text/plain","Backup field too long");return;
+    }
+    strlcpy(destinations[i],value,limits[i]);
+  }
+  const char* names[]={"port","mqtt_en","dev_id_en","mb_en","ota_en","telnet_en","ha_discovery"};
+  for (const char* name:names) {
+    if (!doc.containsKey(name)) continue;
+    if (!doc[name].is<int>() || doc[name].as<int>() < 0) {
+      server.send(400,"text/plain","Invalid numeric field");return;
+    }
+  }
+  if (doc.containsKey("port")) {
+    const int p=doc["port"].as<int>();
+    if (p < 1 || p > 65535) {server.send(400,"text/plain","Invalid MQTT port");return;}
+    next.mqttPort=(uint16_t)p;
+  }
+  if (doc.containsKey("mqtt_en")) next.mqttEnable=doc["mqtt_en"].as<int>()!=0;
+  if (doc.containsKey("dev_id_en")) next.useCustomId=doc["dev_id_en"].as<int>()!=0;
+  if (doc.containsKey("mb_en")) next.modbusEnable=doc["mb_en"].as<int>()!=0;
+  if (doc.containsKey("ota_en")) next.otaEnable=doc["ota_en"].as<int>()!=0;
+  if (doc.containsKey("telnet_en")) next.telnetEnable=doc["telnet_en"].as<int>()!=0;
+  if (doc.containsKey("ha_discovery")) nextFeatures.haDiscovery=doc["ha_discovery"].as<int>()!=0;
+  if (doc.containsKey("capabilities")) {
+    JsonObject caps=doc["capabilities"].as<JsonObject>();
+    if (caps.isNull()) {server.send(400,"text/plain","Invalid capabilities");return;}
+    for (uint8_t i=0;i<CAP_COUNT;i++) {
+      if (!caps.containsKey(CAPABILITY_KEYS[i]))continue;
+      const char* value=caps[CAPABILITY_KEYS[i]];
+      if (!value) {server.send(400,"text/plain","Invalid capability");return;}
+      if (!strcmp(value,"auto"))nextFeatures.capability[i]=CAP_AUTO;
+      else if (!strcmp(value,"supported"))nextFeatures.capability[i]=CAP_SUPPORTED;
+      else if (!strcmp(value,"unsupported"))nextFeatures.capability[i]=CAP_UNSUPPORTED;
+      else {server.send(400,"text/plain","Invalid capability setting");return;}
+    }
+  }
+  sanitizeDeviceId(next.customDeviceId);
+  deviceConfig=next;
+  featureOptions=nextFeatures;
+  saveConfig();
+  saveFeatureOptions();
+  featureDirty=true;
+  computeDeviceID();computeDeviceLabel();
+  mqttEnabled=deviceConfig.mqttEnable!=0;
+  if (mqttClient.connected()) mqttClient.disconnect();
+  if (mqttEnabled && isMqttHostConfigured()) configureMqttClient();
+  // Reboot only after response; user can inspect restored settings before restart.
+  server.send(200,"application/json","{\"restored\":true,\"restart_recommended\":true}");
+}
+
 static void handleSecurityToken() {
   if (!handleAuthentication()) return;
   StaticJsonDocument<80> doc;doc["csrf"] = csrfToken;
@@ -2706,6 +2811,8 @@ void setup() {
   server.on("/api/restart", HTTP_POST, handleRestart);
   server.on("/locale/cs.json", HTTP_GET, handleLocaleCs);
   server.on("/locale/en.json", HTTP_GET, handleLocaleEn);
+  server.on("/api/backup", HTTP_GET, handleConfigBackup);
+  server.on("/api/restore", HTTP_POST, handleConfigRestore);
   server.on("/api/features", HTTP_GET, handleFeaturesGet);
   server.on("/api/features", HTTP_POST, handleFeaturesSave);
   server.on("/mqttconfig", HTTP_POST, handleMQTTConfig);
