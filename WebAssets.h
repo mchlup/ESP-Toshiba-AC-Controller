@@ -291,17 +291,52 @@ $('settingsForm').addEventListener('submit',async event=>{
 const capabilityNames=['swing_v','swing_h','swing_both','swing_fixed','pure','power_select','special_operation'];
 const capLabels={swing_v:'Svislé lamely',swing_h:'Vodorovné lamely',swing_both:'Obě osy',swing_fixed:'Pevná poloha 1–5',pure:'PURE / ionizace',power_select:'Power Select',special_operation:'Speciální režimy'};
 let translations={};
+const localeCache={};
+const localeTextNodes=[];
+const dynamicIds=new Set(['connectionText','dashboardTitle','roomName','lastUpdate','modeCaption',
+ 'targetTemp','powerInfo','powerButtonLabel','indoorTemp','outdoorTemp','operatingStatus',
+ 'hvacState','networkState','uartAge','fanCaption','swingCaption','settingsMessage','toast']);
+async function localePack(lang){
+  if(!localeCache[lang]){
+    const response=await request('/lang/'+lang+'.json');
+    localeCache[lang]=await response.json();
+  }
+  return localeCache[lang];
+}
+function discoverLocalizedText(cs){
+  if(localeTextNodes.length)return;
+  const byText=new Map(Object.entries(cs).map(([key,value])=>[value,key]));
+  const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+  let node;
+  while((node=walker.nextNode())){
+    const parent=node.parentElement;
+    if(!parent||parent.closest('script,style,[data-i18n]'))continue;
+    if([...dynamicIds].some(id=>parent.closest('#'+id)))continue;
+    const raw=node.nodeValue,trimmed=raw.trim();
+    const key=byText.get(trimmed);
+    if(key){
+      const start=raw.indexOf(trimmed);
+      localeTextNodes.push({node,key,prefix:raw.slice(0,start),suffix:raw.slice(start+trimmed.length)});
+    }
+  }
+}
 async function setLanguage(locale){
   const lang=(locale==='en'?'en':'cs');
   try{
-    const response=await request('/lang/'+lang+'.json');
-    translations=await response.json();
-    $('[data-i18n]').forEach(el=>{
+    const cs=await localePack('cs');
+    discoverLocalizedText(cs);
+    translations=await localePack(lang);
+    $$('[data-i18n]').forEach(el=>{
       if(translations[el.dataset.i18n])el.textContent=translations[el.dataset.i18n];
     });
+    for(const entry of localeTextNodes){
+      if(entry.node.isConnected)
+        entry.node.nodeValue=entry.prefix+(translations[entry.key]||cs[entry.key])+entry.suffix;
+    }
     document.documentElement.lang=lang;
     $('languageSelect').value=lang;
-    localStorage.setItem('toshiba_ui_lang',lang);
+    try{localStorage.setItem('toshiba_ui_lang',lang);}catch(_){}
+    if($('capabilityList').children.length)loadExtensions();
   }catch(error){toast('Language pack unavailable: '+error.message,'error');}
 }
 $('languageSelect').addEventListener('change',event=>setLanguage(event.target.value));
