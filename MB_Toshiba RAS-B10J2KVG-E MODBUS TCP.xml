@@ -5,17 +5,30 @@
 	<ModbusCmd Title="Setpoint" Comment="" HintText="" ModbusAddress="1" ModbusCmd="3" ModbusPollingCycle="2" Unit="&lt;v.0&gt; °C" Analog="true" Sensor="true" SourceValHigh="100" DestValHigh="100"/>
 	<ModbusCmd Title="Indoor temperature" Comment="int16 x10, 32767=N/A" HintText="" ModbusAddress="5" ModbusCmd="3" ModbusDataType="1" ModbusPollingCycle="5" Unit="&lt;v.1&gt; °C" Analog="true" Sensor="true" SourceValHigh="10" DestValHigh="1"/>
 	<ModbusCmd Title="Outdoor temperature" Comment="int16 x10, 32767=N/A" HintText="" ModbusAddress="6" ModbusCmd="3" ModbusDataType="1" ModbusPollingCycle="5" Unit="&lt;v.1&gt; °C" Analog="true" Sensor="true" SourceValHigh="10" DestValHigh="1"/>
-	<ModbusCmd Title="Operating state" Comment="0=auto,1=cool,2=heat,3=dry,4=fan_only,5=off" HintText="" ModbusAddress="7" ModbusCmd="3" ModbusPollingCycle="5" Unit="" Analog="false" Sensor="true"/>
+	<ModbusCmd Title="Operating state" Comment="0=off,1=auto,2=heat,3=cool,4=dry,5=fan_only" HintText="" ModbusAddress="7" ModbusCmd="3" ModbusPollingCycle="5" Unit="" Analog="false" Sensor="true"/>
 	<ModbusCmd Title="Flags" Comment="bitmask" HintText="" ModbusAddress="8" ModbusCmd="3" ModbusPollingCycle="10" Unit="" Analog="false" Sensor="true"/>
 	<ModbusCmd Title="Error code" Comment="0xFFFF=unknown" HintText="" ModbusAddress="9" ModbusCmd="3" ModbusPollingCycle="10" Unit="" Analog="false" Sensor="true"/>
 	<ModbusCmd Title="Status bits" Comment="bit0=HVAC UART, bit1=MQTT, bit2=WiFi" HintText="" ModbusAddress="10" ModbusCmd="3" ModbusPollingCycle="5" Unit="" Analog="false" Sensor="true"/>
 	<ModbusCmd Title="Uptime (s, low16)" Comment="" HintText="" ModbusAddress="11" ModbusCmd="3" ModbusPollingCycle="10" Unit="&lt;v.0&gt; s" Analog="true" Sensor="true" SourceValHigh="100" DestValHigh="100"/>
-	<ModbusCmd Title="Mode" Comment="0=auto,1=cool,2=heat,3=dry,4=fan_only,5=off" HintText="" ModbusAddress="2" ModbusCmd="3" ModbusDataType="1" ModbusPollingCycle="2" Unit="&lt;v&gt;" Analog="true" Sensor="true" SourceValHigh="100" DestValHigh="100"/>
-	<ModbusCmd Title="Fan" Comment="" HintText="" ModbusAddress="3" ModbusCmd="3" ModbusPollingCycle="2" Unit="&lt;v&gt;" Analog="true" Sensor="true" SourceValHigh="10" DestValHigh="10"/>
-	<ModbusCmd Title="Swing" Comment="" HintText="" ModbusAddress="4" ModbusCmd="3" ModbusPollingCycle="2" Unit="&lt;v&gt;" Analog="true" Sensor="true" SourceValHigh="100" DestValHigh="100"/>
+	<ModbusCmd Title="Mode" Comment="1=auto,2=heat,3=cool,4=dry,5=fan_only" HintText="" ModbusAddress="2" ModbusCmd="3" ModbusDataType="1" ModbusPollingCycle="2" Unit="&lt;v&gt;" Analog="true" Sensor="true" SourceValHigh="100" DestValHigh="100"/>
+	<ModbusCmd Title="Fan" Comment="1=auto,2..6=level 1..5" HintText="" ModbusAddress="3" ModbusCmd="3" ModbusPollingCycle="2" Unit="&lt;v&gt;" Analog="true" Sensor="true" SourceValHigh="10" DestValHigh="10"/>
+	<ModbusCmd Title="Swing" Comment="5=both,6=H,7=V,8=fix,11..15=fix pos" HintText="" ModbusAddress="4" ModbusCmd="3" ModbusPollingCycle="2" Unit="&lt;v&gt;" Analog="true" Sensor="true" SourceValHigh="100" DestValHigh="100"/>
 	<ModbusCmd Title="Power (write 0/1)" Comment="Write 0=off, 1=on" HintText="" ModbusCmd="6" Unit="" Analog="false" Sensor="false" RepeatRate="3600"/>
 	<ModbusCmd Title="Setpoint (write 17..30 °C)" Comment="Allowed 17..30" HintText="" ModbusAddress="1" ModbusCmd="6" Unit="&lt;v.0&gt; °C" Analog="true" Sensor="false" SourceValHigh="100" DestValHigh="100" RepeatRate="3600"/>
 	<ModbusCmd Title="Mode (set)" Comment="" HintText="" ModbusAddress="2" ModbusCmd="6" ModbusDataType="1" Unit="&lt;v&gt;" Analog="true" Sensor="false" SourceValHigh="10" DestValHigh="10" RepeatRate="5"/>
 	<ModbusCmd Title="Fan (set)" Comment="" HintText="" ModbusAddress="3" ModbusCmd="6" ModbusDataType="1" Unit="&lt;v&gt;" Analog="true" Sensor="false" SourceValHigh="10" DestValHigh="10" RepeatRate="5"/>
 	<ModbusCmd Title="Swing (set)" Comment="" HintText="" ModbusAddress="4" ModbusCmd="6" ModbusDataType="1" Unit="&lt;v.1&gt;" Analog="true" Sensor="false" SourceValHigh="10" DestValHigh="10" RepeatRate="10"/>
+	<ModbusCmd Title="UART RX successful low" Comment="unsigned16 low of counter" ModbusAddress="100" ModbusCmd="3" ModbusPollingCycle="2" Unit="" Analog="true" Sensor="true" SourceValHigh="1" DestValHigh="1"/>
+	<ModbusCmd Title="UART RX rejected low" Comment="unsigned16 low of counter" ModbusAddress="101" ModbusCmd="3" ModbusPollingCycle="2" Unit="" Analog="true" Sensor="true" SourceValHigh="1" DestValHigh="1"/>
+	<ModbusCmd Title="Handshake attempts low" Comment="unsigned16 low of counter" ModbusAddress="102" ModbusCmd="3" ModbusPollingCycle="10" Unit="" Analog="true" Sensor="true" SourceValHigh="1" DestValHigh="1"/>
+	<ModbusCmd Title="UART last RX age" Comment="seconds, 65535=unknown" ModbusAddress="103" ModbusCmd="3" ModbusPollingCycle="2" Unit="" Analog="true" Sensor="true" SourceValHigh="1" DestValHigh="1"/>
+	<ModbusCmd Title="WiFi RSSI" Comment="signed16 dBm, 32767=unknown" ModbusAddress="104" ModbusCmd="3" ModbusPollingCycle="10" Unit="" Analog="true" Sensor="true" SourceValHigh="1" DestValHigh="1"/>
+	<ModbusCmd Title="Free heap kB" Comment="kilobytes" ModbusAddress="105" ModbusCmd="3" ModbusPollingCycle="10" Unit="" Analog="true" Sensor="true" SourceValHigh="1" DestValHigh="1"/>
+	<ModbusCmd Title="MQTT connections" Comment="successful MQTT connections low 16b" ModbusAddress="106" ModbusCmd="3" ModbusPollingCycle="10" Unit="" Analog="true" Sensor="true" SourceValHigh="1" DestValHigh="1"/>
+	<ModbusCmd Title="Reset reason" Comment="platform-specific" ModbusAddress="107" ModbusCmd="3" ModbusPollingCycle="30" Unit="" Analog="true" Sensor="true" SourceValHigh="1" DestValHigh="1"/>
+	<ModbusCmd Title="Last command result" Comment="0=idle,1=pending,2=confirmed,3=timeout" ModbusAddress="108" ModbusCmd="3" ModbusPollingCycle="2" Unit="" Analog="true" Sensor="true" SourceValHigh="1" DestValHigh="1"/>
+	<ModbusCmd Title="Max loop delay" Comment="milliseconds" ModbusAddress="109" ModbusCmd="3" ModbusPollingCycle="10" Unit="" Analog="true" Sensor="true" SourceValHigh="1" DestValHigh="1"/>
+	<ModbusCmd Title="UART RX successful high" Comment="unsigned16 high of counter" ModbusAddress="110" ModbusCmd="3" ModbusPollingCycle="10" Unit="" Analog="true" Sensor="true" SourceValHigh="1" DestValHigh="1"/>
+	<ModbusCmd Title="UART RX rejected high" Comment="unsigned16 high of counter" ModbusAddress="111" ModbusCmd="3" ModbusPollingCycle="10" Unit="" Analog="true" Sensor="true" SourceValHigh="1" DestValHigh="1"/>
+	<ModbusCmd Title="Handshake attempts high" Comment="unsigned16 high of counter" ModbusAddress="112" ModbusCmd="3" ModbusPollingCycle="30" Unit="" Analog="true" Sensor="true" SourceValHigh="1" DestValHigh="1"/>
 </Modbus>
