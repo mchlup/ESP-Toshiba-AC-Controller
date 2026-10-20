@@ -1398,6 +1398,7 @@ static void modbusSetup() {
   for (uint16_t r = 0; r < HREG__COUNT; ++r) {
     mb.addHreg(r, 0);
   }
+  for (uint16_t reg=100; reg<=112; ++reg) mb.addHreg(reg,0);
   modbusInitializedOnce = true;
   modbusActive = true;
   modbusSyncFromHVAC();
@@ -1405,6 +1406,29 @@ static void modbusSetup() {
     hregCache[r] = mb.Hreg(r);
   }
   Serial.printf("Modbus TCP server ON (port 502, unit %u - info only)\n", deviceConfig.modbusUnitId);
+}
+
+static void updateModbusDiagnostics() {
+  if (!modbusActive) return;
+  // Read-only in application logic: refreshed on each heartbeat.
+  mb.Hreg(100, (uint16_t)(hvac.validPackets() & 0xFFFFu));
+  mb.Hreg(101, (uint16_t)(hvac.invalidPackets() & 0xFFFFu));
+  mb.Hreg(102, (uint16_t)(hvac.handshakeAttempts() & 0xFFFFu));
+  const uint32_t lastRx=hvac.lastValidRxMs();
+  mb.Hreg(103, lastRx ? (uint16_t)min((uint32_t)65534, (millis()-lastRx)/1000UL) : 65535);
+  mb.Hreg(104, (uint16_t)(int16_t)(WiFi.status()==WL_CONNECTED ? WiFi.RSSI() : -127));
+  mb.Hreg(105, (uint16_t)min((uint32_t)65535, (uint32_t)ESP.getFreeHeap()/1024u));
+  mb.Hreg(106, (uint16_t)(mqttReconnectCount & 0xFFFF));
+  mb.Hreg(107, (uint16_t)(modbusClientWrites & 0xFFFF));
+  mb.Hreg(108, (uint16_t)(modbusRejectedWrites & 0xFFFF));
+  mb.Hreg(109, featureOptions.haDiscovery);
+  mb.Hreg(110, (uint16_t)hvac.isConnected());
+  uint16_t supported=0,unsupported=0;
+  for(uint8_t i=0;i<CAP_COUNT;i++){
+    if(featureOptions.capability[i]==CAP_SUPPORTED)supported|=(1u<<i);
+    if(featureOptions.capability[i]==CAP_UNSUPPORTED)unsupported|=(1u<<i);
+  }
+  mb.Hreg(111,supported); mb.Hreg(112,unsupported);
 }
 
 // ================== Web ==================
@@ -1862,15 +1886,18 @@ static bool serviceSetProperty(const String& field, const String& value) {
     return false;
   }
   if (field == "pure") {
+    if (!capabilityEnabled(CAP_PURE)) return false;
     if (value == "on") hvac.setPure("on");
     else if (value == "off") hvac.setPure("off");
     else return false;
   } else if (field == "powerSelect") {
+    if (!capabilityEnabled(CAP_POWER_SELECT)) return false;
     if (value == "50%") hvac.setPowerSelect("50%");
     else if (value == "75%") hvac.setPowerSelect("75%");
     else if (value == "100%") hvac.setPowerSelect("100%");
     else return false;
   } else if (field == "operation") {
+    if (!capabilityEnabled(CAP_OPERATION)) return false;
     if (value == "normal") hvac.setOperation("normal");
     else if (value == "high_power") hvac.setOperation("high_power");
     else if (value == "silent_1") hvac.setOperation("silent_1");
@@ -1881,6 +1908,7 @@ static bool serviceSetProperty(const String& field, const String& value) {
     else if (value == "fireplace_2") hvac.setOperation("fireplace_2");
     else return false;
   } else if (field == "wifiLed") {
+    if (!capabilityEnabled(CAP_WIFI_LED)) return false;
     if (value == "on") hvac.setWifiLed("on");
     else if (value == "off") hvac.setWifiLed("off");
     else return false;
@@ -2011,7 +2039,14 @@ static void handleServiceAction() {
     if (!serviceSwingTest.active) {
       server.send(409, "text/plain", "Start a swing test first"); return;
     }
-    if (value == "yes") serviceSwingTest.observation = "yes";
+    if (value == "yes") {
+      serviceSwingTest.observation = "yes";
+      if (featureOptions.capability[CAP_SWING_POSITIONS] == CAP_AUTO) {
+        featureOptions.capability[CAP_SWING_POSITIONS] = CAP_SUPPORTED;
+        saveFeatureOptions();
+        featureDirty = true;
+      }
+    }
     else if (value == "no") serviceSwingTest.observation = "no";
     else if (value == "unknown") serviceSwingTest.observation = "unknown";
     else { server.send(400, "text/plain", "Invalid observation"); return; }
@@ -3027,6 +3062,7 @@ void loop() {
       Serial.print(F("Heartbeat: ")); Serial.println(payload);
     }
     if (modbusActive) {
+      updateModbusDiagnostics();
       setHoldingFromHvac(HREG_STATUS, buildStatusReg());
       setHoldingFromHvac(HREG_UPTIME_S, (uint16_t)((millis()/1000UL) & 0xFFFF));
     }
