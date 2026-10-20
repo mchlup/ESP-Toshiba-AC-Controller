@@ -26,6 +26,7 @@
   #include <WiFiClientSecure.h>
 #endif
 #include "ToshibaCarrierHvac.h"
+#include "FeatureConfig.h"
 
 #if defined(ESP32)
   #include <HardwareSerial.h>
@@ -117,6 +118,7 @@ static const uint32_t STATE_PUBLISH_MS   = 10000UL;
 static const uint32_t HEARTBEAT_MS       = 30000UL;
 static const uint32_t HVAC_TIMEOUT_MS    = 30000UL;
 static const uint32_t MQTT_RETRY_MS      = 5000UL;
+static const uint32_t WIFI_PORTAL_MANUAL_LIMIT_MS = 300000UL;
 // Boot: HVAC is independent of Wi-Fi. The station association is asynchronous;
 // WiFiManager captive portal is processed cooperatively in loop().
 static const uint32_t WIFI_BOOT_STA_GRACE_MS     = 20000UL;
@@ -251,6 +253,60 @@ static bool isConfigValid(const DeviceConfig &cfg) {
   return (c == cfg.crc16);
 }
 
+// Extended feature settings: separate record, original DeviceConfig is unchanged.
+static FeatureOptions featureOptions {};
+static bool featureDirty = false;
+static bool haDiscoveryPublished = false;
+static bool haDiscoveryEverPublished = false;
+static uint32_t haLastPublishMs = 0;
+static uint32_t mqttReconnectCount = 0;
+static uint32_t modbusClientWrites = 0;
+static uint32_t modbusRejectedWrites = 0;
+static uint32_t restartRequestedMs = 0;
+static uint32_t wifiPortalStartedMs = 0;
+static bool wifiPortalManual = false;
+static bool modbusInitializedOnce = false;
+static uint32_t bootReasonCode = 0;
+
+static void defaultFeatureOptions() {
+  memset(&featureOptions, 0, sizeof(featureOptions));
+  featureOptions.magic = FEATURE_MAGIC;
+  featureOptions.version = FEATURE_SCHEMA;
+}
+static bool validFeatureOptions(const FeatureOptions& value) {
+  if (value.magic != FEATURE_MAGIC || value.version != FEATURE_SCHEMA) return false;
+  FeatureOptions tmp = value;
+  tmp.crc = 0;
+  if (crc16_ccitt(reinterpret_cast<const uint8_t*>(&tmp), sizeof(tmp)) != value.crc) return false;
+  for (uint8_t i = 0; i < CAP_COUNT; ++i) if (value.capability[i] > CAP_UNSUPPORTED) return false;
+  return value.haDiscovery <= 1;
+}
+static void loadFeatureOptions() {
+  EEPROM.get(FEATURE_EEPROM_OFFSET, featureOptions);
+  if (!validFeatureOptions(featureOptions)) defaultFeatureOptions();
+}
+static void saveFeatureOptions() {
+  FeatureOptions tmp = featureOptions;
+  tmp.crc = 0;
+  featureOptions.crc = crc16_ccitt(reinterpret_cast<const uint8_t*>(&tmp), sizeof(tmp));
+  EEPROM.put(FEATURE_EEPROM_OFFSET, featureOptions);
+  EEPROM.commit();
+}
+static bool capabilityEnabled(CapabilityId id) {
+  return featureOptions.capability[id] != CAP_UNSUPPORTED;
+}
+static const char* capabilityStateName(uint8_t setting) {
+  switch (setting) { case CAP_SUPPORTED: return "supported"; case CAP_UNSUPPORTED: return "unsupported"; default: return "auto"; }
+}
+static bool commandAllowedByCapabilities(const char* cmd) {
+  if (!cmd) return false;
+  if (!strncasecmp(cmd, "SWING_FIX_", 10) && !capabilityEnabled(CAP_SWING_POSITIONS)) return false;
+  if (!strcasecmp(cmd,"SWING_OFF") && !capabilityEnabled(CAP_SWING_FIXED)) return false;
+  if (!strcasecmp(cmd,"SWING_V") && !capabilityEnabled(CAP_SWING_VERTICAL)) return false;
+  if (!strcasecmp(cmd,"SWING_H") && !capabilityEnabled(CAP_SWING_HORIZONTAL)) return false;
+  if (!strcasecmp(cmd,"SWING_VH") && !capabilityEnabled(CAP_SWING_BOTH)) return false;
+  return true;
+}
 char deviceLabel[32] = {0};  // zobrazený název (name → room-AC → AC-<id>)
 DeviceConfig deviceConfig;
 
@@ -392,6 +448,7 @@ static void loadConfig() {
   } else {
     Serial.println(F("Konfigurace načtena z EEPROM."));
   }
+  loadFeatureOptions();
 }
 
 static void saveConfig() {
@@ -785,7 +842,7 @@ static void bumpRevIfChanged() {
 // ================== HVAC command parsing ==================
 // ================== HVAC command parsing ==================
 static bool processCommand(const char* cmd) {
-  if (!cmd || !*cmd) return false;
+  if (!cmd || !*cmd || !commandAllowedByCapabilities(cmd)) return false;
 
   // Pseudo-kódy pro TX logování (drž je unikátní mimo reálné cmd)
   static const uint8_t PSEUDO_CMD_POWER = 200;
@@ -985,6 +1042,7 @@ static void configureMqttClient() {
   mqttClient.setServer(deviceConfig.mqttServer, deviceConfig.mqttPort);
   // Bound MQTT CONNACK wait; an unresponsive broker must not starve UART.
   mqttClient.setSocketTimeout(3);
+  if (!mqttClient.setBufferSize(2048)) Serial.println(F("MQTT: failed to allocate 2048 byte buffer"));
   mqttClient.setCallback(mqttCallback);
 }
 
@@ -1011,6 +1069,7 @@ static void connectToMQTT() {
 
   if (ok) {
     mqttFailCount = 0;
+    ++mqttReconnectCount;
     mqttClient.publish(statusTopic, "online", true);
     char cmdTopic[96]; expandTopic(deviceConfig.mqttCmdTopic, cmdTopic, sizeof(cmdTopic));
     mqttClient.subscribe(cmdTopic, 1);
@@ -1262,51 +1321,57 @@ static void modbusApplyWrites() {
   uint16_t v = mb.Hreg(HREG_POWER);
   if (v != hregCache[HREG_POWER]) {
     if (v <= 1) {
+      ++modbusClientWrites;
       hvac.setState(v ? "on" : "off");
       rememberRequestedHreg(HREG_POWER, v);
       hregCache[HREG_POWER] = v;
-    } else mb.Hreg(HREG_POWER, hregCache[HREG_POWER]);
+    } else { ++modbusRejectedWrites; mb.Hreg(HREG_POWER, hregCache[HREG_POWER]); }
   }
 
   v = mb.Hreg(HREG_SETPOINT);
   if (v != hregCache[HREG_SETPOINT]) {
     if (v >= 17 && v <= 30) {
+      ++modbusClientWrites;
       hvac.setSetpoint((uint8_t)v);
       rememberRequestedHreg(HREG_SETPOINT, v);
       hregCache[HREG_SETPOINT] = v;
-    } else mb.Hreg(HREG_SETPOINT, hregCache[HREG_SETPOINT]);
+    } else { ++modbusRejectedWrites; mb.Hreg(HREG_SETPOINT, hregCache[HREG_SETPOINT]); }
   }
 
   v = mb.Hreg(HREG_MODE);
   if (v != hregCache[HREG_MODE]) {
     if (isValidModeCode(v)) {
+      ++modbusClientWrites;
       hvac.setMode(regToMode(v));
       rememberRequestedHreg(HREG_MODE, v);
       hregCache[HREG_MODE] = v;
-    } else mb.Hreg(HREG_MODE, hregCache[HREG_MODE]);
+    } else { ++modbusRejectedWrites; mb.Hreg(HREG_MODE, hregCache[HREG_MODE]); }
   }
 
   v = mb.Hreg(HREG_FAN);
   if (v != hregCache[HREG_FAN]) {
     if (isValidFanCode(v)) {
+      ++modbusClientWrites;
       hvac.setFanMode(regToFan(v));
       rememberRequestedHreg(HREG_FAN, v);
       hregCache[HREG_FAN] = v;
-    } else mb.Hreg(HREG_FAN, hregCache[HREG_FAN]);
+    } else { ++modbusRejectedWrites; mb.Hreg(HREG_FAN, hregCache[HREG_FAN]); }
   }
 
   v = mb.Hreg(HREG_SWING);
   if (v != hregCache[HREG_SWING]) {
     if (isValidSwingCode(v)) {
+      ++modbusClientWrites;
       hvac.setSwing(regToSwing(v));
       rememberRequestedHreg(HREG_SWING, v);
       hregCache[HREG_SWING] = v;
-    } else mb.Hreg(HREG_SWING, hregCache[HREG_SWING]);
+    } else { ++modbusRejectedWrites; mb.Hreg(HREG_SWING, hregCache[HREG_SWING]); }
   }
 }
 
 static void modbusSetup() {
   if (!deviceConfig.modbusEnable) { modbusActive = false; return; }
+  if (modbusInitializedOnce) { modbusActive = true; modbusSyncFromHVAC(); return; }
 
   // Stabilní režim – naslouchat na implicitním portu 502 (nezpřístupňujeme změnu portu)
   mb.server();  // TCP 502
@@ -1314,6 +1379,7 @@ static void modbusSetup() {
   for (uint16_t r = 0; r < HREG__COUNT; ++r) {
     mb.addHreg(r, 0);
   }
+  modbusInitializedOnce = true;
   modbusActive = true;
   modbusSyncFromHVAC();
   for (uint16_t r = 0; r < HREG__COUNT; ++r) {
