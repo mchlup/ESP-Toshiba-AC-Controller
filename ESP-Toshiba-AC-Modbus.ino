@@ -1415,7 +1415,7 @@ static void updateModbusDiagnostics() {
   mb.Hreg(101, (uint16_t)(hvac.invalidPackets() & 0xFFFFu));
   mb.Hreg(102, (uint16_t)(hvac.handshakeAttempts() & 0xFFFFu));
   const uint32_t lastRx=hvac.lastValidRxMs();
-  mb.Hreg(103, lastRx ? (uint16_t)min((uint32_t)65534, (millis()-lastRx)/1000UL) : 65535);
+  mb.Hreg(103, lastRx ? (uint16_t)(((millis()-lastRx)/1000UL)>65534UL?65534UL:(millis()-lastRx)/1000UL) : 65535);
   mb.Hreg(104, (uint16_t)(int16_t)(WiFi.status()==WL_CONNECTED ? WiFi.RSSI() : -127));
   mb.Hreg(105, (uint16_t)min((uint32_t)65535, (uint32_t)ESP.getFreeHeap()/1024u));
   mb.Hreg(106, (uint16_t)(mqttReconnectCount & 0xFFFF));
