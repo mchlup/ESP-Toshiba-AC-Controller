@@ -117,6 +117,12 @@ static const uint32_t STATE_PUBLISH_MS   = 10000UL;
 static const uint32_t HEARTBEAT_MS       = 30000UL;
 static const uint32_t HVAC_TIMEOUT_MS    = 30000UL;
 static const uint32_t MQTT_RETRY_MS      = 5000UL;
+// Boot: HVAC is independent of Wi-Fi. The station association is asynchronous;
+// WiFiManager captive portal is processed cooperatively in loop().
+static const uint32_t WIFI_BOOT_STA_GRACE_MS     = 20000UL;
+static const uint32_t WIFI_PORTAL_RETRY_DELAY_MS = 30000UL;
+static const uint32_t WIFI_STA_RECONNECT_MS      = 20000UL;
+static const uint32_t MQTT_BOOT_GUARD_MS         = 15000UL;
 static const uint16_t WFM_STA_TIMEOUT_S  = 180;
 
 // Struktura konfigurace + CRC16 (X25)
@@ -285,6 +291,15 @@ uint32_t lastMqttAttempt = 0;
 volatile bool otaActive = false;   // << oprava: start na false
 uint32_t      otaStartMs = 0;
 static bool   otaStarted = false;  // hlídá, zda už běží OTA (pro runtime zapnutí)
+// The HTTP/Modbus listeners cannot start while the WiFiManager AP owns port 80.
+static bool networkServicesStarted = false;
+static bool wifiHadCredentials = false;
+static bool wifiWasConnected = false;
+static bool wifiHadPortal = false;
+static uint32_t wifiAttemptStartMs = 0;
+static uint32_t wifiPortalLastClosedMs = 0;
+static uint32_t wifiLastReconnectMs = 0;
+static uint32_t firmwareBootMs = 0;
 static const uint32_t BOOT_RED_LED_MS = 2000UL;
 bool     bootRedActive = false;
 uint32_t bootRedUntil  = 0;
@@ -968,6 +983,8 @@ static void configureMqttClient() {
     mqttClient.setClient(wifiClientPlain);
   #endif
   mqttClient.setServer(deviceConfig.mqttServer, deviceConfig.mqttPort);
+  // Bound MQTT CONNACK wait; an unresponsive broker must not starve UART.
+  mqttClient.setSocketTimeout(3);
   mqttClient.setCallback(mqttCallback);
 }
 
@@ -1934,6 +1951,11 @@ static void handleTelnet() {
 
 // ================== FLASH button: vyvolání WiFiManager portálu ==================
 static void enterConfigPortal() {
+  // Do not interfere with an already running nonblocking startup portal.
+  if (wifiManager.getConfigPortalActive()) {
+    Serial.println(F("[FLASH] Config portal is already active."));
+    return;
+  }
   Serial.println(F("[FLASH] Request to open WiFiManager config portal"));
 
   // Stop služeb, aby portál měl volné porty a AP naskočilo spolehlivě
@@ -2227,6 +2249,170 @@ static void handleFactoryResetPost() {
   }
 }
 
+// Saving portal configuration is deferred until after WiFiManager.process(),
+// outside its callback, so HVAC servicing remains the first loop activity.
+static void applySavedPortalParameters() {
+  if (!shouldSaveConfig) return;
+  shouldSaveConfig = false;
+  Serial.println(F("Applying WiFiManager parameters (EEPROM)..."));
+  deviceConfig.mqttEnable = (uint8_t)atoi(p_mqtt_en.getValue());
+  strlcpy(deviceConfig.mqttServer, p_mqtt_server.getValue(), sizeof(deviceConfig.mqttServer));
+  deviceConfig.mqttPort = (uint16_t)atoi(p_mqtt_port.getValue());
+  strlcpy(deviceConfig.mqttUser, p_mqtt_user.getValue(), sizeof(deviceConfig.mqttUser));
+  strlcpy(deviceConfig.mqttPassword, p_mqtt_pass.getValue(), sizeof(deviceConfig.mqttPassword));
+  strlcpy(deviceConfig.mqttCmdTopic, p_mqtt_cmd.getValue(), sizeof(deviceConfig.mqttCmdTopic));
+  strlcpy(deviceConfig.mqttStateTopic, p_mqtt_state.getValue(), sizeof(deviceConfig.mqttStateTopic));
+  strlcpy(deviceConfig.mqttHeartbeatTopic, p_mqtt_hb.getValue(), sizeof(deviceConfig.mqttHeartbeatTopic));
+
+  deviceConfig.useCustomId = (uint8_t)atoi(p_dev_id_en.getValue());
+  strlcpy(deviceConfig.customDeviceId, p_dev_id.getValue(), sizeof(deviceConfig.customDeviceId));
+  sanitizeDeviceId(deviceConfig.customDeviceId);
+  strlcpy(deviceConfig.room, p_room.getValue(), sizeof(deviceConfig.room));
+  strlcpy(deviceConfig.unitName, p_name.getValue(), sizeof(deviceConfig.unitName));
+
+  deviceConfig.modbusEnable = (uint8_t)atoi(p_mb_enable.getValue());
+  { // pouze info
+    uint16_t mp = (uint16_t)atoi(p_mb_port.getValue());
+    deviceConfig.modbusPort = (mp == 0 ? 502 : mp);
+  }
+  { // pouze info
+    int uid = atoi(p_mb_uid.getValue());
+    if (uid < 1) uid = 1; if (uid > 247) uid = 247;
+    deviceConfig.modbusUnitId = (uint8_t)uid;
+  }
+
+  deviceConfig.otaEnable = (uint8_t)atoi(p_ota_en.getValue());
+  strlcpy(deviceConfig.otaPassword, p_ota_pass.getValue(), sizeof(deviceConfig.otaPassword));
+
+  deviceConfig.telnetEnable = (uint8_t)atoi(p_telnet_en.getValue());
+  strlcpy(deviceConfig.telnetPassword, p_telnet_pass.getValue(), sizeof(deviceConfig.telnetPassword));
+
+  saveConfig();
+  computeDeviceID();
+  computeDeviceLabel();
+  mqttEnabled = deviceConfig.mqttEnable != 0;
+  if (mqttClient.connected()) mqttClient.disconnect();
+  if (mqttEnabled && isMqttHostConfigured()) configureMqttClient();
+  telnetEnabled = deviceConfig.telnetEnable != 0;
+  Serial.printf("[BOOT %lu ms] WiFiManager config saved\n", (unsigned long)millis());
+}
+
+// Configure OTA only once and only when the network is ready. This also
+// covers OTA enabled through the WiFiManager portal on the first boot.
+static void startArduinoOTAAfterWiFi() {
+  if (!deviceConfig.otaEnable || otaStarted) return;
+  char host[24];
+  snprintf(host, sizeof(host), "toshiba-%s", deviceID);
+  ArduinoOTA.setHostname(host);
+  if (deviceConfig.otaPassword[0]) ArduinoOTA.setPassword(deviceConfig.otaPassword);
+  ArduinoOTA.onStart([]() { Serial.println(F("OTA start")); otaActive = true; otaStartMs = millis(); });
+  ArduinoOTA.onEnd([]()   { Serial.println(F("OTA end")); otaActive = false; if (RED_LED_PIN >= 0) analogWrite(RED_LED_PIN, 0); });
+  ArduinoOTA.onProgress([](unsigned int p, unsigned int t) { uint32_t pct = (t ? (p * 100U / t) : 0U); Serial.printf("OTA: %u%%\r\n", pct); });
+  ArduinoOTA.onError([](ota_error_t e) { Serial.printf("OTA err %u\r\n", e); otaActive = false; if (RED_LED_PIN >= 0) analogWrite(RED_LED_PIN, 0); });
+  ArduinoOTA.begin();
+  otaStarted = true;
+  Serial.print(F("[WiFi] OTA ready, hostname: ")); Serial.println(host);
+}
+
+// Start listeners once STA has received an IP. Never compete with the
+// WiFiManager captive portal HTTP server on port 80.
+static void startNetworkServicesAfterWiFi() {
+  if (networkServicesStarted || WiFi.status() != WL_CONNECTED ||
+      wifiManager.getConfigPortalActive()) return;
+
+  server.begin();
+  Serial.println(F("[WiFi] Web server started (80)."));
+  if (telnetEnabled) {
+    telnetServer.begin();
+    telnetServer.setNoDelay(true);
+    Serial.println(F("[WiFi] Telnet server started (23)."));
+  }
+  startArduinoOTAAfterWiFi();
+  modbusSetup();
+  networkServicesStarted = true;
+  Serial.printf("[BOOT %lu ms] HTTP/Modbus services ready: %s\n",
+                (unsigned long)millis(), WiFi.localIP().toString().c_str());
+}
+
+static void startNonblockingConfigPortal() {
+  if (wifiManager.getConfigPortalActive() || networkServicesStarted) return;
+  wifiManager.setConfigPortalBlocking(false);
+  wifiManager.setConfigPortalTimeout(300);
+  char apName[40];
+  snprintf(apName, sizeof(apName), "Toshiba-%s-HVAC-Setup", deviceID);
+  Serial.printf("[BOOT %lu ms] Starting nonblocking AP: %s\n",
+                (unsigned long)millis(), apName);
+  wifiManager.startConfigPortal(apName);
+  if (wifiManager.getConfigPortalActive()) {
+    wifiHadPortal = true;
+    Serial.printf("[WiFi] Config portal address: %s\n", WiFi.softAPIP().toString().c_str());
+  } else {
+    // Avoid tight-loop retry when the ESP cannot enable the AP.
+    wifiPortalLastClosedMs = millis();
+    Serial.println(F("[WiFi] Failed to start portal; retry later."));
+  }
+}
+
+static void maintainWiFiBoot() {
+  const uint32_t now = millis();
+  const bool wasPortalActive = wifiManager.getConfigPortalActive();
+  if (wasPortalActive) wifiManager.process();
+
+  // Parameters were written by WiFiManager callback; commit outside callbacks.
+  if (shouldSaveConfig) applySavedPortalParameters();
+
+  const bool portalActive = wifiManager.getConfigPortalActive();
+  if (wasPortalActive && !portalActive) {
+    wifiPortalLastClosedMs = millis();
+    wifiAttemptStartMs = millis();
+    Serial.printf("[BOOT %lu ms] WiFiManager portal closed\n", (unsigned long)millis());
+    if (WiFi.status() != WL_CONNECTED && wifiManager.getWiFiIsSaved()) {
+      WiFi.mode(WIFI_STA);
+      WiFi.begin(); // resume STA using newly saved credentials
+      wifiHadCredentials = true;
+    }
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!wifiWasConnected) {
+      wifiWasConnected = true;
+      Serial.printf("[BOOT %lu ms] Wi-Fi CONNECTED: %s\n",
+                    (unsigned long)millis(), WiFi.localIP().toString().c_str());
+    }
+    if (!portalActive) startNetworkServicesAfterWiFi();
+    return;
+  }
+
+  if (wifiWasConnected) {
+    wifiWasConnected = false;
+    wifiAttemptStartMs = now;
+    wifiLastReconnectMs = now;
+    Serial.printf("[WiFi %lu ms] STA disconnected; HVAC remains active\n",
+                  (unsigned long)now);
+  }
+
+  if (portalActive) return;
+
+  if (networkServicesStarted) {
+    // On a running controller do not start another AP on TCP/80 while the
+    // dashboard server owns that port. Let the station reconnect instead.
+    if (now - wifiLastReconnectMs >= WIFI_STA_RECONNECT_MS) {
+      wifiLastReconnectMs = now;
+      WiFi.reconnect();
+      Serial.println(F("[WiFi] Reconnecting STA in background."));
+    }
+    return;
+  }
+
+  // If no saved credentials, show captive portal immediately. Otherwise
+  // allow a full 20s for DHCP/authentication, WITHOUT blocking HVAC.
+  if (wifiHadCredentials && now - wifiAttemptStartMs < WIFI_BOOT_STA_GRACE_MS) return;
+  // After a timeout/closed portal, avoid opening an AP in a tight loop.
+  if (wifiHadPortal && wifiPortalLastClosedMs &&
+      now - wifiPortalLastClosedMs < WIFI_PORTAL_RETRY_DELAY_MS) return;
+  startNonblockingConfigPortal();
+}
+
 // ================== Setup/Loop ==================
 void setup() {
   // LEDy
@@ -2260,9 +2446,16 @@ void setup() {
     HVAC_SERIAL.begin(9600, SERIAL_8E1, RX_PIN, TX_PIN);
   #endif
 
+  // CRITICAL: this uses the original proven 6-frame Toshiba handshake,
+  // unchanged 9600/8E1 pins and timings.  Call it before ANY Wi-Fi work.
+  firmwareBootMs = millis();
+  Serial.printf("[BOOT %lu ms] HVAC handshake start\n", (unsigned long)millis());
+  hvac.handleHvac();
+  Serial.printf("[BOOT %lu ms] HVAC handshake first pass completed\n", (unsigned long)millis());
+
   loadConfig();
 
-  // DeviceID pro SSID již teď (před autoConnect)
+  // DeviceID pro SSID již teď (before Wi-Fi STA start)
   computeDeviceID();
   computeDeviceLabel();
 
@@ -2311,10 +2504,16 @@ void setup() {
 
   wifiManager.setSaveConfigCallback(saveConfigCallback);
 
-  // Přesnější chování připojení: kratší pokusy o STA, pak AP portál
-  wifiManager.setConnectTimeout(30);  // sekund pokus o STA
-  wifiManager.setConnectRetries(2);   // kolikrát zkusit
-  wifiManager.setTimeout(300);        // sekund běží portál (když se otevře)
+  // Do not call autoConnect(): it can block up to 30s x 2 before HVAC starts.
+  // Failed STA association is handled by our state machine; portal is nonblocking.
+  wifiManager.setConfigPortalBlocking(false);
+  wifiManager.setConnectTimeout(8);     // only used during portal credential save
+  wifiManager.setSaveConnectTimeout(8);
+  wifiManager.setConnectRetries(1);
+  wifiManager.setConfigPortalTimeout(300);
+  wifiManager.setBreakAfterConfig(true);
+  wifiManager.setDisableConfigPortal(true); // close AP after successful Wi-Fi save
+  wifiManager.setSaveParamsCallback(saveConfigCallback);
 
   wifiManager.addParameter(&p_mqtt_en);
   wifiManager.addParameter(&p_mqtt_server);
@@ -2336,50 +2535,18 @@ void setup() {
   wifiManager.addParameter(&p_telnet_en);
   wifiManager.addParameter(&p_telnet_pass);
 
-  // Připojení / AP fallback (standardní režim STA; do AP se přepíná jen pro portál)
+  // STA connect happens in the background; do not wait here.
+  // Stored credentials belong to the core (as saved by WiFiManager).
   WiFi.mode(WIFI_STA);
-  {
-    char apName[40];
-    snprintf(apName, sizeof(apName), "Toshiba-%s-HVAC-Setup", deviceID);
-    wifiManager.autoConnect(apName);
-  }
-  Serial.print(F("WiFi IP: ")); Serial.println(WiFi.localIP());
-
-  if (shouldSaveConfig) {
-    Serial.println(F("Ukladam WiFiManager parametry..."));
-    deviceConfig.mqttEnable = (uint8_t)atoi(p_mqtt_en.getValue());
-    strlcpy(deviceConfig.mqttServer, p_mqtt_server.getValue(), sizeof(deviceConfig.mqttServer));
-    deviceConfig.mqttPort = (uint16_t)atoi(p_mqtt_port.getValue());
-    strlcpy(deviceConfig.mqttUser, p_mqtt_user.getValue(), sizeof(deviceConfig.mqttUser));
-    strlcpy(deviceConfig.mqttPassword, p_mqtt_pass.getValue(), sizeof(deviceConfig.mqttPassword));
-    strlcpy(deviceConfig.mqttCmdTopic, p_mqtt_cmd.getValue(), sizeof(deviceConfig.mqttCmdTopic));
-    strlcpy(deviceConfig.mqttStateTopic, p_mqtt_state.getValue(), sizeof(deviceConfig.mqttStateTopic));
-    strlcpy(deviceConfig.mqttHeartbeatTopic, p_mqtt_hb.getValue(), sizeof(deviceConfig.mqttHeartbeatTopic));
-
-    deviceConfig.useCustomId = (uint8_t)atoi(p_dev_id_en.getValue());
-    strlcpy(deviceConfig.customDeviceId, p_dev_id.getValue(), sizeof(deviceConfig.customDeviceId));
-    sanitizeDeviceId(deviceConfig.customDeviceId);
-    strlcpy(deviceConfig.room, p_room.getValue(), sizeof(deviceConfig.room));
-    strlcpy(deviceConfig.unitName, p_name.getValue(), sizeof(deviceConfig.unitName));
-
-    deviceConfig.modbusEnable = (uint8_t)atoi(p_mb_enable.getValue());
-    { // pouze info
-      uint16_t mp = (uint16_t)atoi(p_mb_port.getValue());
-      deviceConfig.modbusPort = (mp == 0 ? 502 : mp);
-    }
-    { // pouze info
-      int uid = atoi(p_mb_uid.getValue());
-      if (uid < 1) uid = 1; if (uid > 247) uid = 247;
-      deviceConfig.modbusUnitId = (uint8_t)uid;
-    }
-
-    deviceConfig.otaEnable = (uint8_t)atoi(p_ota_en.getValue());
-    strlcpy(deviceConfig.otaPassword, p_ota_pass.getValue(), sizeof(deviceConfig.otaPassword));
-
-    deviceConfig.telnetEnable = (uint8_t)atoi(p_telnet_en.getValue());
-    strlcpy(deviceConfig.telnetPassword, p_telnet_pass.getValue(), sizeof(deviceConfig.telnetPassword));
-
-    saveConfig();
+  WiFi.setAutoReconnect(true);
+  wifiHadCredentials = wifiManager.getWiFiIsSaved();
+  wifiAttemptStartMs = millis();
+  if (wifiHadCredentials) {
+    WiFi.begin();
+    Serial.printf("[BOOT %lu ms] STA connecting asynchronously\n", (unsigned long)millis());
+  } else {
+    Serial.printf("[BOOT %lu ms] No saved Wi-Fi; config AP will open in loop()\n",
+                  (unsigned long)millis());
   }
 
   // DeviceID dle configu (znovu pro případ změny custom ID)
@@ -2518,50 +2685,37 @@ void setup() {
   server.send(200,"text/plain",s);
   });
 
-  server.begin();
-  Serial.println(F("Web server OK."));
-
-  // Telnet
+  // Routes registered. Do not bind port 80 yet: WiFiManager needs it if
+  // STA credentials are missing or connection fails during bootstrap.
+  Serial.println(F("Web routes ready (listener deferred until STA connected)."));
   telnetEnabled = (deviceConfig.telnetEnable != 0);
-  if (telnetEnabled) {
-    telnetServer.begin();
-    telnetServer.setNoDelay(true);
-    Serial.println(F("Telnet server OK (23)."));
-  } else {
-    Serial.println(F("Telnet server disabled."));
-  }
 
-  // OTA (hostname = "toshiba-" + deviceID) – pouze když povoleno
-  if (deviceConfig.otaEnable) {
-    char host[24]; snprintf(host, sizeof(host), "toshiba-%s", deviceID);
-    ArduinoOTA.setHostname(host);
-    if (deviceConfig.otaPassword[0]) { ArduinoOTA.setPassword(deviceConfig.otaPassword); }
-    ArduinoOTA.onStart([]() { Serial.println(F("OTA start")); otaActive = true; otaStartMs = millis(); });
-    ArduinoOTA.onEnd([]()   { Serial.println(F("OTA end")); otaActive = false; if (RED_LED_PIN >= 0) analogWrite(RED_LED_PIN, 0); });
-    ArduinoOTA.onProgress([](unsigned int p, unsigned int t) { uint32_t pct = (t ? (p * 100U / t) : 0U); Serial.printf("OTA: %u%%\r\n", pct); });
-    ArduinoOTA.onError([](ota_error_t e) { Serial.printf("OTA err %u\r\n", e); otaActive = false; if (RED_LED_PIN >= 0) analogWrite(RED_LED_PIN, 0); });
-    ArduinoOTA.begin();
-    otaStarted = true;
-    Serial.print(F("OTA ready, hostname: ")); Serial.println(host);
-  } else {
-    otaStarted = false;
-    Serial.println(F("OTA disabled."));
-  }
+  // The actual OTA setup is deferred until Wi-Fi connects, including
+  // passwords/settings newly provided by the first-run config portal.
+  otaStarted = false;
 
-  // Modbus TCP – spustit jen když povoleno
-  modbusSetup();
-
+  // Modbus server starts with the other listeners after STA association.
+  modbusActive = false;
   lastHvacResponse = millis();
-
-  // Volitelný rychlý “probe” po startu pro debug linky
-  hvac.handleHvac();
-  delay(10);
-  hvacStatus s = hvac.getStatus();
-  Serial.printf("HVAC probe: room=%d, out=%d\n", (int)s.roomTemperature, (int)s.outsideTemperature);
+  Serial.printf("[BOOT %lu ms] setup() completed; HVAC continues regardless of Wi-Fi\n",
+                (unsigned long)millis());
 }
 
 void loop() {
-  if (deviceConfig.otaEnable && otaStarted) {
+  // Highest priority: the original Toshiba handshake and RX collector.
+  hvac.handleHvac();
+  static bool hvacConnectLogged = false;
+  if (hvac.isConnected() && !hvacConnectLogged) {
+    hvacConnectLogged = true;
+    Serial.printf("[BOOT %lu ms] HVAC UART CONNECTED (rx_ok=%lu)\n",
+                  (unsigned long)millis(), (unsigned long)hvac.validPackets());
+  }
+
+  // STA and WiFiManager AP are serviced cooperatively in loop().
+  maintainWiFiBoot();
+
+  if (networkServicesStarted && WiFi.status() == WL_CONNECTED &&
+      deviceConfig.otaEnable && otaStarted) {
     ArduinoOTA.handle();
   }
 
@@ -2569,17 +2723,19 @@ void loop() {
   bootRedLedHandle();
   otaLedHandle(); // animace červené LED během OTA
 
-  if (mqttEnabled) {
+  // Do not allow a blocking MQTT TCP attempt during the first handshake and
+  // full initial Toshiba query. UART is serviced before this block.
+  if (networkServicesStarted && WiFi.status() == WL_CONNECTED && mqttEnabled &&
+      (millis() - firmwareBootMs >= MQTT_BOOT_GUARD_MS)) {
     if (!mqttClient.connected()) connectToMQTT();
     if (mqttClient.connected()) mqttClient.loop();
   }
 
-  server.handleClient();
-  handleTelnet();
-  handleFlashButton();  // krátký stisk FLASH otevře WiFiManager portál
-
-  // HVAC servisní funkce
-  hvac.handleHvac();
+  if (networkServicesStarted && WiFi.status() == WL_CONNECTED) {
+    server.handleClient();
+    handleTelnet();
+  }
+  handleFlashButton(); // manual portal remains accessible as before
 
   // Modbus obsluha
   if (modbusActive) {
