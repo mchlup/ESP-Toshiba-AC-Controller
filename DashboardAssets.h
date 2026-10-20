@@ -142,8 +142,8 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
           <section class="card settings-card">
             <div class="card-head"><div><span class="section-label">IDENTITA</span><h2>Zařízení</h2></div></div>
             <div class="field-grid">
-              <label class="field">Název zařízení<input name="name" maxlength="31" placeholder="Klimatizace obývák"></label>
-              <label class="field">Místnost<input name="room" maxlength="31" placeholder="Obývák"></label>
+              <label class="field">Název zařízení<input name="name" maxlength="23" placeholder="Klimatizace obývák"></label>
+              <label class="field">Místnost<input name="room" maxlength="23" placeholder="Obývák"></label>
               <label class="field">Vlastní ID<select name="dev_id_en"><option value="0">Vypnuto (MAC)</option><option value="1">Zapnuto</option></select></label>
               <label class="field">Identifikátor<input name="dev_id" maxlength="12" placeholder="AC-OBYVAK"></label>
             </div>
@@ -155,17 +155,17 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
               <label class="field">Port<input name="port" type="number" min="1" max="65535" placeholder="1883"></label>
               <label class="field wide">Adresa brokeru<input name="server" maxlength="63" placeholder="192.168.1.10"></label>
               <label class="field">Uživatelské jméno<input name="user" maxlength="31"></label>
-              <label class="field">Heslo<input name="pass" type="password" maxlength="63" placeholder="Ponechat beze změny" autocomplete="new-password"></label>
-              <label class="field wide">Topic příkazů<input name="cmdtopic" maxlength="95" placeholder="toshiba/{id}/control"></label>
-              <label class="field wide">Topic stavu<input name="statetopic" maxlength="95" placeholder="toshiba/{id}/state"></label>
-              <label class="field wide">Topic heartbeat<input name="hbtopic" maxlength="95" placeholder="toshiba/{id}/heartbeat"></label>
+              <label class="field">Heslo<input name="pass" type="password" maxlength="39" placeholder="Ponechat beze změny" autocomplete="new-password"></label>
+              <label class="field wide">Topic příkazů<input name="cmdtopic" maxlength="63" placeholder="toshiba/{id}/control"></label>
+              <label class="field wide">Topic stavu<input name="statetopic" maxlength="63" placeholder="toshiba/{id}/state"></label>
+              <label class="field wide">Topic heartbeat<input name="hbtopic" maxlength="63" placeholder="toshiba/{id}/heartbeat"></label>
             </div>
           </section>
           <section class="card settings-card">
             <div class="card-head"><div><span class="section-label">PŘÍSTUP</span><h2>Zabezpečení WebUI</h2></div></div>
             <div class="field-grid">
-              <label class="field">Web uživatel<input name="webuser" maxlength="31" autocomplete="username"></label>
-              <label class="field">Nové webové heslo<input name="webpass" type="password" maxlength="63" placeholder="Ponechat beze změny" autocomplete="new-password"></label>
+              <label class="field">Web uživatel<input name="webuser" maxlength="19" autocomplete="username"></label>
+              <label class="field">Nové webové heslo<input name="webpass" type="password" maxlength="19" placeholder="Ponechat beze změny" autocomplete="new-password"></label>
             </div>
             <p class="hint">Rozhraní používá HTTP Basic ověřování. Nepřistupujte k němu přímo z veřejného internetu.</p>
           </section>
@@ -175,9 +175,9 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
               <label class="field">Modbus TCP<select name="mb_en"><option value="0">Vypnuto</option><option value="1">Zapnuto</option></select></label>
               <label class="field">Port Modbus<input id="modbusPort" type="text" value="502" readonly></label>
               <label class="field">Arduino OTA<select name="ota_en"><option value="0">Vypnuto</option><option value="1">Zapnuto</option></select></label>
-              <label class="field">Heslo OTA<input name="ota_pass" type="password" maxlength="63" placeholder="Ponechat beze změny"></label>
+              <label class="field">Heslo OTA<input name="ota_pass" type="password" maxlength="31" placeholder="Ponechat beze změny"></label>
               <label class="field">Telnet<select name="telnet_en"><option value="0">Vypnuto</option><option value="1">Zapnuto</option></select></label>
-              <label class="field">Heslo Telnet<input name="telnet_pass" type="password" maxlength="63" placeholder="Ponechat beze změny"></label>
+              <label class="field">Heslo Telnet<input name="telnet_pass" type="password" maxlength="15" placeholder="Ponechat beze změny"></label>
             </div>
           </section>
 <section class="card settings-card" id="capabilityCard">
