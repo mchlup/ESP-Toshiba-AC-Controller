@@ -27,6 +27,8 @@
 #endif
 #include "ToshibaCarrierHvac.h"
 #include "FeatureConfig.h"
+#include "LocaleCs.h"
+#include "LocaleEn.h"
 
 #if defined(ESP32)
   #include <HardwareSerial.h>
@@ -1425,6 +1427,17 @@ static void handleRoot() {
 
 
 // Feature API is separated from legacy EEPROM DeviceConfig.
+static void handleLocaleCs() {
+  if (!handleAuthentication()) return;
+  server.sendHeader("Cache-Control","public, max-age=3600");
+  server.send(200,"application/json; charset=utf-8",FPSTR(LOCALE_CS));
+}
+static void handleLocaleEn() {
+  if (!handleAuthentication()) return;
+  server.sendHeader("Cache-Control","public, max-age=3600");
+  server.send(200,"application/json; charset=utf-8",FPSTR(LOCALE_EN));
+}
+
 static void handleFeaturesGet() {
   if (!handleAuthentication()) return;
   StaticJsonDocument<768> doc;
@@ -2661,6 +2674,8 @@ void setup() {
   server.on("/", handleRoot);
   server.on("/command", HTTP_POST, handleCommand);
   server.on("/api/restart", HTTP_POST, handleRestart);
+  server.on("/locale/cs.json", HTTP_GET, handleLocaleCs);
+  server.on("/locale/en.json", HTTP_GET, handleLocaleEn);
   server.on("/api/features", HTTP_GET, handleFeaturesGet);
   server.on("/api/features", HTTP_POST, handleFeaturesSave);
   server.on("/mqttconfig", HTTP_POST, handleMQTTConfig);
