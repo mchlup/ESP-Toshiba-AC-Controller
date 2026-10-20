@@ -33,16 +33,17 @@ static void publishHaDiscovery() {
   modes.add("off");modes.add("auto");modes.add("heat");modes.add("cool");modes.add("dry");modes.add("fan_only");
   JsonArray fans=doc.createNestedArray("fan_modes");
   fans.add("auto");for(int i=1;i<=5;++i)fans.add(String("lvl_")+i);
-  if(capAllowed(0)||capAllowed(1)||capAllowed(2)) {
+  if(capAllowed(0)||capAllowed(1)||capAllowed(2)||extCfg.caps[3]==1) {
     doc["swing_mode_state_topic"]=stateTopic;
     doc["swing_mode_state_template"]="{{ value_json.swing }}";
     doc["swing_mode_command_topic"]=cmdTopic;
-    doc["swing_mode_command_template"]="{% if value == 'fix' %}SWING_OFF{% elif value == 'v_swing' %}SWING_V{% elif value == 'h_swing' %}SWING_H{% else %}SWING_VH{% endif %}";
+    doc["swing_mode_command_template"]="{% if value == 'fix' %}SWING_OFF{% elif value.startswith('fix_pos_') %}SWING_FIX_{{ value | replace('fix_pos_', '') }}{% elif value == 'v_swing' %}SWING_V{% elif value == 'h_swing' %}SWING_H{% else %}SWING_VH{% endif %}";
     JsonArray swings=doc.createNestedArray("swing_modes");
     swings.add("fix");
     if(capAllowed(0))swings.add("v_swing");
     if(capAllowed(1))swings.add("h_swing");
     if(capAllowed(2))swings.add("hv_swing");
+    if(extCfg.caps[3]==1)for(int p=1;p<=5;++p)swings.add(String("fix_pos_")+p);
   }
   doc["min_temp"]=17;doc["max_temp"]=30;doc["temp_step"]=1;
   doc["temperature_unit"]="C";
