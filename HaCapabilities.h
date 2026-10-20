@@ -9,7 +9,7 @@ static void publishHaDiscovery() {
   expandTopic(deviceConfig.mqttStateTopic,stateTopic,sizeof(stateTopic));
   expandTopic(deviceConfig.mqttCmdTopic,cmdTopic,sizeof(cmdTopic));
   expandTopic("toshiba/{id}/status",statusTopic,sizeof(statusTopic));
-  DynamicJsonDocument doc(1450);
+  DynamicJsonDocument doc(2400);
   doc["name"]=deviceLabel;
   doc["unique_id"]=String("toshiba_")+deviceID;
   doc["availability_topic"]=statusTopic;
@@ -18,13 +18,13 @@ static void publishHaDiscovery() {
   doc["mode_state_topic"]=stateTopic;
   doc["mode_state_template"]="{{ 'off' if value_json.power == 'off' else value_json.mode }}";
   doc["mode_command_topic"]=cmdTopic;
-  doc["mode_command_template"]="{% if value == 'off' %}STATE_OFF{% elif value == 'fan_only' %}MODE_FAN{% else %}MODE_{{ value | upper }}{% endif %}";
+  doc["mode_command_template"]="{% if value == 'off' %}STATE_OFF{% else %}HA_MODE_{{ value | upper }}{% endif %}";
   doc["temperature_state_topic"]=stateTopic;
   doc["temperature_state_template"]="{{ value_json.temp }}";
   doc["temperature_command_topic"]=cmdTopic;
   doc["temperature_command_template"]="TEMP_{{ value | int }}";
   doc["current_temperature_topic"]=stateTopic;
-  doc["current_temperature_template"]="{{ value_json.t_in | default(0) }}";
+  doc["current_temperature_template"]="{{ value_json.t_in | default(none) }}";
   doc["fan_mode_state_topic"]=stateTopic;
   doc["fan_mode_state_template"]="{{ value_json.fan }}";
   doc["fan_mode_command_topic"]=cmdTopic;
