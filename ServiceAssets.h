@@ -30,7 +30,10 @@ static const char SERVICE_HTML[] PROGMEM = R"SERVICEHTML(
 </style></head><body><div class="service-wrap">
 <div class="service-hero"><div><h1 style="margin:4px 0">Servisn&#237; konzole Toshiba</h1>
 <div class="service-small">Diagnostika, stav UART, funkce a ov&#283;&#345;en&#237; nat&#225;&#269;en&#237; lamel</div></div>
-<div class="btn-group"><a class="btn" href="/">Dashboard</a><a class="btn" href="/debug">Debug</a></div></div>
+<div class="btn-group"><label class="field" style="display:inline-flex;align-items:center;gap:7px">
+<span>Jazyk / Language</span>
+<select id="servLocale" aria-label="Language"><option value="cs">Čeština</option><option value="en">English</option></select></label>
+<a class="btn" href="/">Dashboard</a><a class="btn" href="/debug">Debug</a></div></div>
 <div class="service-warn">Zobrazen&#233; hodnoty jsou stavy hl&#225;&#353;en&#233; protokolem, nikoliv p&#345;&#237;m&#225; fyzick&#225; kontrola.
 Dostupnost funkc&#237; PURE, Power Select, Operation a pevn&#253;ch poloh lamel z&#225;vis&#237; na modelu klimatizace.
 Povely mohou zm&#283;nit provoz jednotky. Pou&#382;&#237;vejte pouze v d&#367;v&#283;ryhodn&#233; lok&#225;ln&#237; s&#237;ti.</div>
@@ -213,5 +216,43 @@ function bind(){
   $serv('servSniffClear').onclick=()=>invoke('sniff',undefined,'clear');
   update();setInterval(update,3000);
 }
-document.addEventListener('DOMContentLoaded',bind);
+let servLocaleNodes=[];
+const servDynamic=['servMsg','servConnection','servBuild','servTelemetry','servSettings','servSwingReport','servRaw','servValue'];
+async function setServiceLocale(lang){
+  lang=lang==='en'?'en':'cs';
+  try{
+    const read=async choice=>{
+      const response=await fetch('/lang/'+choice+'.json',{credentials:'same-origin',cache:'force-cache'});
+      if(!response.ok)throw new Error('HTTP '+response.status);
+      return response.json();
+    };
+    const source=await read('cs'),translated=lang==='cs'?source:await read(lang);
+    if(!servLocaleNodes.length){
+      const map=new Map(Object.entries(source).map(([k,v])=>[v,k]));
+      const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+      let node;
+      while((node=walker.nextNode())){
+        const element=node.parentElement;
+        if(!element||element.closest('script,style'))continue;
+        if(servDynamic.some(id=>element.closest('#'+id)))continue;
+        const raw=node.nodeValue,trim=raw.trim(),key=map.get(trim);
+        if(key){
+          const index=raw.indexOf(trim);
+          servLocaleNodes.push({node,key,prefix:raw.slice(0,index),suffix:raw.slice(index+trim.length)});
+        }
+      }
+    }
+    for(const item of servLocaleNodes)
+      if(item.node.isConnected)item.node.nodeValue=item.prefix+(translated[item.key]||source[item.key])+item.suffix;
+    document.documentElement.lang=lang;
+    $serv('servLocale').value=lang;
+    try{localStorage.setItem('toshiba_ui_lang',lang);}catch(_){}
+  }catch(e){message('Locale unavailable: '+e.message,true);}
+}
+document.addEventListener('DOMContentLoaded',()=>{
+  bind();
+  $serv('servLocale').addEventListener('change',e=>setServiceLocale(e.target.value));
+  let locale='cs';try{locale=localStorage.getItem('toshiba_ui_lang')||navigator.language.slice(0,2);}catch(_){}
+  setServiceLocale(locale);
+});
 )SERVICEJS";
