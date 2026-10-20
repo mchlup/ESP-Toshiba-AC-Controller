@@ -117,6 +117,12 @@ static const uint32_t STATE_PUBLISH_MS   = 10000UL;
 static const uint32_t HEARTBEAT_MS       = 30000UL;
 static const uint32_t HVAC_TIMEOUT_MS    = 30000UL;
 static const uint32_t MQTT_RETRY_MS      = 5000UL;
+// Boot: HVAC is independent of Wi-Fi. The station association is asynchronous;
+// WiFiManager captive portal is processed cooperatively in loop().
+static const uint32_t WIFI_BOOT_STA_GRACE_MS     = 20000UL;
+static const uint32_t WIFI_PORTAL_RETRY_DELAY_MS = 30000UL;
+static const uint32_t WIFI_STA_RECONNECT_MS      = 20000UL;
+static const uint32_t MQTT_BOOT_GUARD_MS         = 15000UL;
 static const uint16_t WFM_STA_TIMEOUT_S  = 180;
 
 // Struktura konfigurace + CRC16 (X25)
@@ -285,6 +291,15 @@ uint32_t lastMqttAttempt = 0;
 volatile bool otaActive = false;   // << oprava: start na false
 uint32_t      otaStartMs = 0;
 static bool   otaStarted = false;  // hlídá, zda už běží OTA (pro runtime zapnutí)
+// The HTTP/Modbus listeners cannot start while the WiFiManager AP owns port 80.
+static bool networkServicesStarted = false;
+static bool wifiHadCredentials = false;
+static bool wifiWasConnected = false;
+static bool wifiHadPortal = false;
+static uint32_t wifiAttemptStartMs = 0;
+static uint32_t wifiPortalLastClosedMs = 0;
+static uint32_t wifiLastReconnectMs = 0;
+static uint32_t firmwareBootMs = 0;
 static const uint32_t BOOT_RED_LED_MS = 2000UL;
 bool     bootRedActive = false;
 uint32_t bootRedUntil  = 0;
@@ -968,6 +983,8 @@ static void configureMqttClient() {
     mqttClient.setClient(wifiClientPlain);
   #endif
   mqttClient.setServer(deviceConfig.mqttServer, deviceConfig.mqttPort);
+  // Bound MQTT CONNACK wait; an unresponsive broker must not starve UART.
+  mqttClient.setSocketTimeout(3);
   mqttClient.setCallback(mqttCallback);
 }
 
@@ -1328,211 +1345,14 @@ static void handleAppJs() {
   server.send(200, "application/javascript", FPSTR(APP_JS));
 }
 
+// Root dashboard: page is stored in flash, not built in heap String.
+#include "DashboardAssets.h"
 static void handleRoot() {
   if (!handleAuthentication()) return;
-
-  String html;
-  html.reserve(16000);
-
-  // --- Head + header ---
-  html += F("<!doctype html><html lang='cs'><head><meta charset='utf-8'>");
-  html += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
-  html += F("<title>Toshiba HVAC</title>");
-  html += F("<link rel='preload' href='/app.css' as='style'><link rel='stylesheet' href='/app.css'>");
-  html += F("</head><body><div class='container'>");
-
-  html += F("<div class='header'>"
-            "  <div class='hgroup'>"
-            "    <span class='brand'>");
-  html += htmlEscape(deviceLabel[0] ? deviceLabel : "Toshiba HVAC");
-  html += F("</span>"
-            "    <span class='badge'>ID: ");
-  html += deviceID;
-  html += deviceConfig.useCustomId ? F(" · custom") : F(" · mac");
-  html += F("</span>");
-  if (deviceConfig.room[0]) {
-    html += F("<span class='badge'>Room: ");
-    html += htmlEscape(deviceConfig.room);
-    html += F("</span>");
-  }
-   html += F("  </div>"
-            "  <div class='hgroup'>"
-            "    <span id='pwrDot' class='status-dot bad'></span>"
-            "    <span id='oper' class='badge'>—</span>"
-            "  </div>"
-            "</div>");
-
-  html += F("<div class='grid'>");
-
-  // --- Stav zařízení ---
-  html += F("<div class='card' style='grid-column:span 6'>"
-            "  <h3>Stav zařízení</h3>"
-            "  <div class='kv'>"
-            "    <span>Wi-Fi</span><span>");
-  html += (WiFi.status()==WL_CONNECTED) ? F("Connected") : F("Not connected");
-  html += F("</span><span>IP adresa</span><span>");
-  html += WiFi.localIP().toString();
-  html += F("</span><span>MQTT</span><span>");
-  html += deviceConfig.mqttEnable ? (mqttClient.connected() ? "Enabled & Connected" : "Enabled, not connected") : "Disabled";
-  html += F("</span><span>HVAC UART</span><span id='hvacBadge'><span class='status-dot bad'></span>—</span>"
-            "<span>Modbus TCP</span><span>");
-  html += deviceConfig.modbusEnable ? (modbusActive ? "Enabled (running)" : "Enabled (not running)") : "Disabled";
-  html += F("</span><span>Telnet</span><span>");
-  html += deviceConfig.telnetEnable ? (deviceConfig.telnetPassword[0] ? "Enabled (password set)" : "Enabled") : "Disabled";
-  html += F("</span></div></div>");
-
-  // --- Teploty ---
-  html += F("<div class='card' style='grid-column:span 6'>"
-            "  <h3>Teploty</h3>"
-            "  <div class='row' style='justify-content:space-between'>"
-            "    <div><small class='muted'>Vnitřní</small><div id='tin' class='value'>—</div></div>"
-            "    <div><small class='muted'>Venkovní</small><div id='tout' class='value'>—</div></div>"
-            "  </div>"
-            "  <hr class='sep'>"
-            "  <div class='row'>"
-            "    <button id='btnOff' class='btn'>Vypnout</button>"
-            "    <button id='btnOn' class='btn primary'>Zapnout</button>"
-            "    <div class='grow'></div>"
-            "    <div class='row'>"
-            "      <small class='muted'>Nastaveno</small>"
-            "      <div id='setVal' class='value'>—</div>"
-            "      <small>°C</small>"
-            "    </div>"
-            "  </div>"
-            "  <input id='temp' class='slider' type='range' min='17' max='30' step='1' value='24'/>"
-            "</div>");
-
-  // --- Režim ---
-  html += F("<div class='card' style='grid-column:span 12'>"
-            "  <h3>Režim</h3>"
-            "  <div id='modeGroup' class='segment'>"
-            "    <button data-val='auto' class='active'>Auto</button>"
-            "    <button data-val='heat'>Topení</button>"
-            "    <button data-val='cool'>Chlazení</button>"
-            "    <button data-val='dry'>Dry</button>"
-            "    <button data-val='fan_only'>Ventilátor</button>"
-            "  </div>"
-            "</div>");
-
-  // --- Ventilátor ---
-  html += F("<div class='card' style='grid-column:span 6'>"
-            "  <h3>Ventilátor</h3>"
-            "  <div id='fanGroup' class='btn-group'>"
-            "    <button class='btn' data-val='auto'>Auto</button>"
-            "    <button class='btn' data-val='quiet'>Quiet</button>"
-            "    <button class='btn' data-val='low'>Low</button>"
-            "    <button class='btn' data-val='medium'>Medium</button>"
-            "    <button class='btn' data-val='high'>High</button>"
-            "    <button class='btn' data-val='lvl_1'>Tichá</button>"
-            "    <button class='btn' data-val='lvl_2'>Nízká</button>"
-            "    <button class='btn' data-val='lvl_3'>Střední</button>"
-            "    <button class='btn' data-val='lvl_4'>Vyšší</button>"
-            "    <button class='btn' data-val='lvl_5'>Vysoká</button>"
-            "  </div>"
-            "</div>");
-
-  // --- Natáčení lamel ---
-  html += F("<div class='card' style='grid-column:span 6'>"
-            "  <h3>Natáčení lamel</h3>"
-            "  <div id='swingGroup' class='btn-group'>"
-            "    <button class='btn' data-val='fix'>Fix</button>"
-            "    <button class='btn' data-val='v_swing'>V-swing</button>"
-            "    <button class='btn' data-val='h_swing'>H-swing</button>"
-            "    <button class='btn' data-val='vh_swing'>VH-swing</button>"
-            "    <button class='btn' data-val='fix_pos_1'>Fix 1</button>"
-            "    <button class='btn' data-val='fix_pos_2'>Fix 2</button>"
-            "    <button class='btn' data-val='fix_pos_3'>Fix 3</button>"
-            "    <button class='btn' data-val='fix_pos_4'>Fix 4</button>"
-            "    <button class='btn' data-val='fix_pos_5'>Fix 5</button>"
-            "  </div>"
-            "</div>");
-
-  // --- Konfigurace zařízení ---
-  html += F("<div class='card' style='grid-column:span 12'>"
-            "  <h3>Konfigurace zařízení</h3>"
-            "  <div class='form'>"
-            "    <div class='field sm'><label>MQTT enable (0/1)</label><input id='cfg_mqtt_en' type='number' min='0' max='1'></div>"
-            "    <div class='field lg'><label>MQTT server</label><input id='cfg_server' type='text' placeholder='broker.local'></div>"
-            "    <div class='field sm'><label>MQTT port</label><input id='cfg_port' type='number' min='1' max='65535'></div>"
-            "    <div class='field sm'><label>MQTT user</label><input id='cfg_user' type='text'></div>"
-            "    <div class='field sm'><label>MQTT pass</label><input id='cfg_pass' type='password'></div>"
-            "    <div class='field lg'><label>Cmd topic</label><input id='cfg_cmdtopic' type='text' placeholder='toshiba/{id}/control'></div>"
-            "    <div class='field lg'><label>State topic</label><input id='cfg_statetopic' type='text' placeholder='toshiba/{id}/state'></div>"
-            "    <div class='field lg'><label>Heartbeat topic</label><input id='cfg_hbtopic' type='text' placeholder='toshiba/{id}/heartbeat'></div>"
-            "    <div class='field sm'><label>Web uživatel</label><input id='cfg_webuser' type='text'></div>"
-            "    <div class='field sm'><label>Web heslo</label><input id='cfg_webpass' type='password'></div>"
-            "    <div class='field sm'><label>Místnost (room)</label><input id='cfg_room' type='text' placeholder='Obyvak'></div>"
-            "    <div class='field sm'><label>Název jednotky (name)</label><input id='cfg_name' type='text' placeholder='AC Obyvak'></div>"
-            "    <div class='field sm'><label>Use custom ID (0/1)</label><input id='cfg_dev_id_en' type='number' min='0' max='1'></div>"
-            "    <div class='field sm'><label>Custom ID</label><input id='cfg_dev_id' type='text' placeholder='A-Za-z0-9_- (max 12 -> doplní MAC)'></div>"
-            "    <div class='field sm'><label>Modbus enable (0/1)</label><input id='cfg_mb_en' type='number' min='0' max='1'></div>"
-            "    <div class='field sm'><label>Modbus port (info)</label><input id='cfg_mb_port' type='number' disabled></div>"
-            "    <div class='field sm'><label>Modbus Unit ID (info)</label><input id='cfg_mb_uid' type='number' disabled></div>"
-            "    <div class='field sm'><label>OTA enable (0/1)</label><input id='cfg_ota_en' type='number' min='0' max='1'></div>"
-            "    <div class='field sm'><label>OTA password</label><input id='cfg_ota_pass' type='password'></div>"
-            "    <div class='field sm'><label>Telnet enable (0/1)</label><input id='cfg_telnet_en' type='number' min='0' max='1'></div>"
-            "    <div class='field sm'><label>Telnet password</label><input id='cfg_telnet_pass' type='password'></div>"
-            "    <div class='field lg'><span class='help'>Pozn.: MQTT topics podporují <code class='tag'>{id}</code>. Změny se aplikují okamžitě, bez restartu.</span></div>"
-            "  </div>"
-            "  <div class='row' style='margin-top:10px;justify-content:flex-end'>"
-            "    <button id='btnCfgReload' class='btn'>Načíst znovu</button>"
-            "    <button id='btnCfgSave' class='btn primary'>Uložit konfiguraci</button>"
-            "  </div>"
-            "  <div id='cfgMsg' class='help' style='margin-top:6px'></div>"
-            "</div>");
-
-    // --- Firmware update (krátký formulář přímo na Dashboardu) ---
-  html += F("<div class='card' style='grid-column:span 12'>"
-            "  <h3>Firmware</h3>"
-            "  <form method='POST' action='/fwupdate' enctype='multipart/form-data' class='row' style='flex-wrap:wrap'>"
-            "    <input class='btn' type='file' name='fw' accept='.bin' required>"
-            "    <button class='btn primary' type='submit'>Nahrát & aktualizovat</button>"
-            "    <div class='grow'></div>"
-            "    <a class='link' href='/fw'>Pokročilá stránka…</a>"
-            "  </form>"
-            "  <div class='help' style='margin-top:6px'>Po úspěšném nahrání proběhne automatický restart.</div>"
-            "</div>");
-
-  // --- konec gridu + footer + skripty ---
-  html += F("</div>");  // grid
-
-  html += F("<footer class='sticky'>"
-            "  <div class='footerbar'>"
-            "    <div class='row' style='gap:8px'>"
-            "      <button id='btnOff2' class='btn'>OFF</button>"
-            "      <button id='btnOn2' class='btn primary'>ON</button>"
-            "    </div>"
-            "    <div class='grow'>"
-            "      <input id='temp2' class='slider' type='range' min='17' max='30' step='1' value='24'/>"
-            "    </div>"
-            "    <div class='row'><small class='muted'>Set</small><div id='setVal2' class='value'>—</div><small>°C</small></div>"
-            "  </div>"
-            "</footer>");
-
-  html += F("<div style='margin-top:14px'>"
-            "  <small class='muted'>Konfigurace najdeš na původní URL <code class='tag'>/mqttconfig</code> a diagnostiku na "
-            "  <a class='link' href='/debug'>/debug</a> | <a class='link' href='/service'>Servis HVAC</a>. Výchozí hesla <code class='tag'>admin/admin</code> prosím hned změň.</small>"
-            "</div>");
-
-  html += F("<script src='/app.js'></script>"
-            "<script>"
-            "document.addEventListener('DOMContentLoaded',()=>{"
-            " const t=document.getElementById('temp'), t2=document.getElementById('temp2');"
-            " const v=document.getElementById('setVal'), v2=document.getElementById('setVal2');"
-            " const sync=(a,b,va,vb)=>{a.addEventListener('input',e=>{b.value=e.target.value; va.textContent=vb.textContent=e.target.value;});"
-            " a.addEventListener('change',()=>{b.dispatchEvent(new Event('change'));});};"
-            " if(t&&t2&&v&&v2){sync(t,t2,v,v2); sync(t2,t,v2,v);}"
-            " const on=()=>{const x=document.getElementById('btnOn'); if(x) x.click();};"
-            " const off=()=>{const x=document.getElementById('btnOff'); if(x) x.click();};"
-            " const on2=document.getElementById('btnOn2'), off2=document.getElementById('btnOff2');"
-            " if(on2) on2.onclick=on; if(off2) off2.onclick=off;"
-            "});"
-            "</script>");
-
-  html += F("</div></body></html>");
-
-  server.send(200, "text/html", html);
+  server.sendHeader("Cache-Control", "no-cache");
+  server.send(200, "text/html; charset=utf-8", FPSTR(DASHBOARD_HTML));
 }
+
 
 static void handleCommand() {
   if (!handleAuthentication()) return;
@@ -2131,6 +1951,11 @@ static void handleTelnet() {
 
 // ================== FLASH button: vyvolání WiFiManager portálu ==================
 static void enterConfigPortal() {
+  // Do not interfere with an already running nonblocking startup portal.
+  if (wifiManager.getConfigPortalActive()) {
+    Serial.println(F("[FLASH] Config portal is already active."));
+    return;
+  }
   Serial.println(F("[FLASH] Request to open WiFiManager config portal"));
 
   // Stop služeb, aby portál měl volné porty a AP naskočilo spolehlivě
@@ -2424,6 +2249,170 @@ static void handleFactoryResetPost() {
   }
 }
 
+// Saving portal configuration is deferred until after WiFiManager.process(),
+// outside its callback, so HVAC servicing remains the first loop activity.
+static void applySavedPortalParameters() {
+  if (!shouldSaveConfig) return;
+  shouldSaveConfig = false;
+  Serial.println(F("Applying WiFiManager parameters (EEPROM)..."));
+  deviceConfig.mqttEnable = (uint8_t)atoi(p_mqtt_en.getValue());
+  strlcpy(deviceConfig.mqttServer, p_mqtt_server.getValue(), sizeof(deviceConfig.mqttServer));
+  deviceConfig.mqttPort = (uint16_t)atoi(p_mqtt_port.getValue());
+  strlcpy(deviceConfig.mqttUser, p_mqtt_user.getValue(), sizeof(deviceConfig.mqttUser));
+  strlcpy(deviceConfig.mqttPassword, p_mqtt_pass.getValue(), sizeof(deviceConfig.mqttPassword));
+  strlcpy(deviceConfig.mqttCmdTopic, p_mqtt_cmd.getValue(), sizeof(deviceConfig.mqttCmdTopic));
+  strlcpy(deviceConfig.mqttStateTopic, p_mqtt_state.getValue(), sizeof(deviceConfig.mqttStateTopic));
+  strlcpy(deviceConfig.mqttHeartbeatTopic, p_mqtt_hb.getValue(), sizeof(deviceConfig.mqttHeartbeatTopic));
+
+  deviceConfig.useCustomId = (uint8_t)atoi(p_dev_id_en.getValue());
+  strlcpy(deviceConfig.customDeviceId, p_dev_id.getValue(), sizeof(deviceConfig.customDeviceId));
+  sanitizeDeviceId(deviceConfig.customDeviceId);
+  strlcpy(deviceConfig.room, p_room.getValue(), sizeof(deviceConfig.room));
+  strlcpy(deviceConfig.unitName, p_name.getValue(), sizeof(deviceConfig.unitName));
+
+  deviceConfig.modbusEnable = (uint8_t)atoi(p_mb_enable.getValue());
+  { // pouze info
+    uint16_t mp = (uint16_t)atoi(p_mb_port.getValue());
+    deviceConfig.modbusPort = (mp == 0 ? 502 : mp);
+  }
+  { // pouze info
+    int uid = atoi(p_mb_uid.getValue());
+    if (uid < 1) uid = 1; if (uid > 247) uid = 247;
+    deviceConfig.modbusUnitId = (uint8_t)uid;
+  }
+
+  deviceConfig.otaEnable = (uint8_t)atoi(p_ota_en.getValue());
+  strlcpy(deviceConfig.otaPassword, p_ota_pass.getValue(), sizeof(deviceConfig.otaPassword));
+
+  deviceConfig.telnetEnable = (uint8_t)atoi(p_telnet_en.getValue());
+  strlcpy(deviceConfig.telnetPassword, p_telnet_pass.getValue(), sizeof(deviceConfig.telnetPassword));
+
+  saveConfig();
+  computeDeviceID();
+  computeDeviceLabel();
+  mqttEnabled = deviceConfig.mqttEnable != 0;
+  if (mqttClient.connected()) mqttClient.disconnect();
+  if (mqttEnabled && isMqttHostConfigured()) configureMqttClient();
+  telnetEnabled = deviceConfig.telnetEnable != 0;
+  Serial.printf("[BOOT %lu ms] WiFiManager config saved\n", (unsigned long)millis());
+}
+
+// Configure OTA only once and only when the network is ready. This also
+// covers OTA enabled through the WiFiManager portal on the first boot.
+static void startArduinoOTAAfterWiFi() {
+  if (!deviceConfig.otaEnable || otaStarted) return;
+  char host[24];
+  snprintf(host, sizeof(host), "toshiba-%s", deviceID);
+  ArduinoOTA.setHostname(host);
+  if (deviceConfig.otaPassword[0]) ArduinoOTA.setPassword(deviceConfig.otaPassword);
+  ArduinoOTA.onStart([]() { Serial.println(F("OTA start")); otaActive = true; otaStartMs = millis(); });
+  ArduinoOTA.onEnd([]()   { Serial.println(F("OTA end")); otaActive = false; if (RED_LED_PIN >= 0) analogWrite(RED_LED_PIN, 0); });
+  ArduinoOTA.onProgress([](unsigned int p, unsigned int t) { uint32_t pct = (t ? (p * 100U / t) : 0U); Serial.printf("OTA: %u%%\r\n", pct); });
+  ArduinoOTA.onError([](ota_error_t e) { Serial.printf("OTA err %u\r\n", e); otaActive = false; if (RED_LED_PIN >= 0) analogWrite(RED_LED_PIN, 0); });
+  ArduinoOTA.begin();
+  otaStarted = true;
+  Serial.print(F("[WiFi] OTA ready, hostname: ")); Serial.println(host);
+}
+
+// Start listeners once STA has received an IP. Never compete with the
+// WiFiManager captive portal HTTP server on port 80.
+static void startNetworkServicesAfterWiFi() {
+  if (networkServicesStarted || WiFi.status() != WL_CONNECTED ||
+      wifiManager.getConfigPortalActive()) return;
+
+  server.begin();
+  Serial.println(F("[WiFi] Web server started (80)."));
+  if (telnetEnabled) {
+    telnetServer.begin();
+    telnetServer.setNoDelay(true);
+    Serial.println(F("[WiFi] Telnet server started (23)."));
+  }
+  startArduinoOTAAfterWiFi();
+  modbusSetup();
+  networkServicesStarted = true;
+  Serial.printf("[BOOT %lu ms] HTTP/Modbus services ready: %s\n",
+                (unsigned long)millis(), WiFi.localIP().toString().c_str());
+}
+
+static void startNonblockingConfigPortal() {
+  if (wifiManager.getConfigPortalActive() || networkServicesStarted) return;
+  wifiManager.setConfigPortalBlocking(false);
+  wifiManager.setConfigPortalTimeout(300);
+  char apName[40];
+  snprintf(apName, sizeof(apName), "Toshiba-%s-HVAC-Setup", deviceID);
+  Serial.printf("[BOOT %lu ms] Starting nonblocking AP: %s\n",
+                (unsigned long)millis(), apName);
+  wifiManager.startConfigPortal(apName);
+  if (wifiManager.getConfigPortalActive()) {
+    wifiHadPortal = true;
+    Serial.printf("[WiFi] Config portal address: %s\n", WiFi.softAPIP().toString().c_str());
+  } else {
+    // Avoid tight-loop retry when the ESP cannot enable the AP.
+    wifiPortalLastClosedMs = millis();
+    Serial.println(F("[WiFi] Failed to start portal; retry later."));
+  }
+}
+
+static void maintainWiFiBoot() {
+  const uint32_t now = millis();
+  const bool wasPortalActive = wifiManager.getConfigPortalActive();
+  if (wasPortalActive) wifiManager.process();
+
+  // Parameters were written by WiFiManager callback; commit outside callbacks.
+  if (shouldSaveConfig) applySavedPortalParameters();
+
+  const bool portalActive = wifiManager.getConfigPortalActive();
+  if (wasPortalActive && !portalActive) {
+    wifiPortalLastClosedMs = millis();
+    wifiAttemptStartMs = millis();
+    Serial.printf("[BOOT %lu ms] WiFiManager portal closed\n", (unsigned long)millis());
+    if (WiFi.status() != WL_CONNECTED && wifiManager.getWiFiIsSaved()) {
+      WiFi.mode(WIFI_STA);
+      WiFi.begin(); // resume STA using newly saved credentials
+      wifiHadCredentials = true;
+    }
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!wifiWasConnected) {
+      wifiWasConnected = true;
+      Serial.printf("[BOOT %lu ms] Wi-Fi CONNECTED: %s\n",
+                    (unsigned long)millis(), WiFi.localIP().toString().c_str());
+    }
+    if (!portalActive) startNetworkServicesAfterWiFi();
+    return;
+  }
+
+  if (wifiWasConnected) {
+    wifiWasConnected = false;
+    wifiAttemptStartMs = now;
+    wifiLastReconnectMs = now;
+    Serial.printf("[WiFi %lu ms] STA disconnected; HVAC remains active\n",
+                  (unsigned long)now);
+  }
+
+  if (portalActive) return;
+
+  if (networkServicesStarted) {
+    // On a running controller do not start another AP on TCP/80 while the
+    // dashboard server owns that port. Let the station reconnect instead.
+    if (now - wifiLastReconnectMs >= WIFI_STA_RECONNECT_MS) {
+      wifiLastReconnectMs = now;
+      WiFi.reconnect();
+      Serial.println(F("[WiFi] Reconnecting STA in background."));
+    }
+    return;
+  }
+
+  // If no saved credentials, show captive portal immediately. Otherwise
+  // allow a full 20s for DHCP/authentication, WITHOUT blocking HVAC.
+  if (wifiHadCredentials && now - wifiAttemptStartMs < WIFI_BOOT_STA_GRACE_MS) return;
+  // After a timeout/closed portal, avoid opening an AP in a tight loop.
+  if (wifiHadPortal && wifiPortalLastClosedMs &&
+      now - wifiPortalLastClosedMs < WIFI_PORTAL_RETRY_DELAY_MS) return;
+  startNonblockingConfigPortal();
+}
+
 // ================== Setup/Loop ==================
 void setup() {
   // LEDy
@@ -2457,9 +2446,16 @@ void setup() {
     HVAC_SERIAL.begin(9600, SERIAL_8E1, RX_PIN, TX_PIN);
   #endif
 
+  // CRITICAL: this uses the original proven 6-frame Toshiba handshake,
+  // unchanged 9600/8E1 pins and timings.  Call it before ANY Wi-Fi work.
+  firmwareBootMs = millis();
+  Serial.printf("[BOOT %lu ms] HVAC handshake start\n", (unsigned long)millis());
+  hvac.handleHvac();
+  Serial.printf("[BOOT %lu ms] HVAC handshake first pass completed\n", (unsigned long)millis());
+
   loadConfig();
 
-  // DeviceID pro SSID již teď (před autoConnect)
+  // DeviceID pro SSID již teď (before Wi-Fi STA start)
   computeDeviceID();
   computeDeviceLabel();
 
@@ -2508,10 +2504,16 @@ void setup() {
 
   wifiManager.setSaveConfigCallback(saveConfigCallback);
 
-  // Přesnější chování připojení: kratší pokusy o STA, pak AP portál
-  wifiManager.setConnectTimeout(30);  // sekund pokus o STA
-  wifiManager.setConnectRetries(2);   // kolikrát zkusit
-  wifiManager.setTimeout(300);        // sekund běží portál (když se otevře)
+  // Do not call autoConnect(): it can block up to 30s x 2 before HVAC starts.
+  // Failed STA association is handled by our state machine; portal is nonblocking.
+  wifiManager.setConfigPortalBlocking(false);
+  wifiManager.setConnectTimeout(8);     // only used during portal credential save
+  wifiManager.setSaveConnectTimeout(8);
+  wifiManager.setConnectRetries(1);
+  wifiManager.setConfigPortalTimeout(300);
+  wifiManager.setBreakAfterConfig(true);
+  wifiManager.setDisableConfigPortal(true); // close AP after successful Wi-Fi save
+  wifiManager.setSaveParamsCallback(saveConfigCallback);
 
   wifiManager.addParameter(&p_mqtt_en);
   wifiManager.addParameter(&p_mqtt_server);
@@ -2533,50 +2535,18 @@ void setup() {
   wifiManager.addParameter(&p_telnet_en);
   wifiManager.addParameter(&p_telnet_pass);
 
-  // Připojení / AP fallback (standardní režim STA; do AP se přepíná jen pro portál)
+  // STA connect happens in the background; do not wait here.
+  // Stored credentials belong to the core (as saved by WiFiManager).
   WiFi.mode(WIFI_STA);
-  {
-    char apName[40];
-    snprintf(apName, sizeof(apName), "Toshiba-%s-HVAC-Setup", deviceID);
-    wifiManager.autoConnect(apName);
-  }
-  Serial.print(F("WiFi IP: ")); Serial.println(WiFi.localIP());
-
-  if (shouldSaveConfig) {
-    Serial.println(F("Ukladam WiFiManager parametry..."));
-    deviceConfig.mqttEnable = (uint8_t)atoi(p_mqtt_en.getValue());
-    strlcpy(deviceConfig.mqttServer, p_mqtt_server.getValue(), sizeof(deviceConfig.mqttServer));
-    deviceConfig.mqttPort = (uint16_t)atoi(p_mqtt_port.getValue());
-    strlcpy(deviceConfig.mqttUser, p_mqtt_user.getValue(), sizeof(deviceConfig.mqttUser));
-    strlcpy(deviceConfig.mqttPassword, p_mqtt_pass.getValue(), sizeof(deviceConfig.mqttPassword));
-    strlcpy(deviceConfig.mqttCmdTopic, p_mqtt_cmd.getValue(), sizeof(deviceConfig.mqttCmdTopic));
-    strlcpy(deviceConfig.mqttStateTopic, p_mqtt_state.getValue(), sizeof(deviceConfig.mqttStateTopic));
-    strlcpy(deviceConfig.mqttHeartbeatTopic, p_mqtt_hb.getValue(), sizeof(deviceConfig.mqttHeartbeatTopic));
-
-    deviceConfig.useCustomId = (uint8_t)atoi(p_dev_id_en.getValue());
-    strlcpy(deviceConfig.customDeviceId, p_dev_id.getValue(), sizeof(deviceConfig.customDeviceId));
-    sanitizeDeviceId(deviceConfig.customDeviceId);
-    strlcpy(deviceConfig.room, p_room.getValue(), sizeof(deviceConfig.room));
-    strlcpy(deviceConfig.unitName, p_name.getValue(), sizeof(deviceConfig.unitName));
-
-    deviceConfig.modbusEnable = (uint8_t)atoi(p_mb_enable.getValue());
-    { // pouze info
-      uint16_t mp = (uint16_t)atoi(p_mb_port.getValue());
-      deviceConfig.modbusPort = (mp == 0 ? 502 : mp);
-    }
-    { // pouze info
-      int uid = atoi(p_mb_uid.getValue());
-      if (uid < 1) uid = 1; if (uid > 247) uid = 247;
-      deviceConfig.modbusUnitId = (uint8_t)uid;
-    }
-
-    deviceConfig.otaEnable = (uint8_t)atoi(p_ota_en.getValue());
-    strlcpy(deviceConfig.otaPassword, p_ota_pass.getValue(), sizeof(deviceConfig.otaPassword));
-
-    deviceConfig.telnetEnable = (uint8_t)atoi(p_telnet_en.getValue());
-    strlcpy(deviceConfig.telnetPassword, p_telnet_pass.getValue(), sizeof(deviceConfig.telnetPassword));
-
-    saveConfig();
+  WiFi.setAutoReconnect(true);
+  wifiHadCredentials = wifiManager.getWiFiIsSaved();
+  wifiAttemptStartMs = millis();
+  if (wifiHadCredentials) {
+    WiFi.begin();
+    Serial.printf("[BOOT %lu ms] STA connecting asynchronously\n", (unsigned long)millis());
+  } else {
+    Serial.printf("[BOOT %lu ms] No saved Wi-Fi; config AP will open in loop()\n",
+                  (unsigned long)millis());
   }
 
   // DeviceID dle configu (znovu pro případ změny custom ID)
@@ -2674,6 +2644,11 @@ void setup() {
     doc["uart_rx_invalid"] = hvac.invalidPackets();
     doc["uart_handshakes"] = hvac.handshakeAttempts();
     doc["uart_last_rx_ms"] = hvac.lastValidRxMs();
+    const uint32_t lastRx = hvac.lastValidRxMs();
+    if (lastRx) doc["uart_last_rx_age_ms"] = millis() - lastRx;
+    else doc["uart_last_rx_age_ms"] = nullptr;
+    doc["wifi_connected"] = WiFi.status() == WL_CONNECTED;
+    doc["mqtt_connected"] = mqttEnabled && mqttClient.connected();
     doc["oper"]  = hvacOperatingState();
     float tin, tout;
     if (hvacReadRoomTemp(tin)  && !isnan(tin))  doc["t_in"]  = tin;
@@ -2710,50 +2685,37 @@ void setup() {
   server.send(200,"text/plain",s);
   });
 
-  server.begin();
-  Serial.println(F("Web server OK."));
-
-  // Telnet
+  // Routes registered. Do not bind port 80 yet: WiFiManager needs it if
+  // STA credentials are missing or connection fails during bootstrap.
+  Serial.println(F("Web routes ready (listener deferred until STA connected)."));
   telnetEnabled = (deviceConfig.telnetEnable != 0);
-  if (telnetEnabled) {
-    telnetServer.begin();
-    telnetServer.setNoDelay(true);
-    Serial.println(F("Telnet server OK (23)."));
-  } else {
-    Serial.println(F("Telnet server disabled."));
-  }
 
-  // OTA (hostname = "toshiba-" + deviceID) – pouze když povoleno
-  if (deviceConfig.otaEnable) {
-    char host[24]; snprintf(host, sizeof(host), "toshiba-%s", deviceID);
-    ArduinoOTA.setHostname(host);
-    if (deviceConfig.otaPassword[0]) { ArduinoOTA.setPassword(deviceConfig.otaPassword); }
-    ArduinoOTA.onStart([]() { Serial.println(F("OTA start")); otaActive = true; otaStartMs = millis(); });
-    ArduinoOTA.onEnd([]()   { Serial.println(F("OTA end")); otaActive = false; if (RED_LED_PIN >= 0) analogWrite(RED_LED_PIN, 0); });
-    ArduinoOTA.onProgress([](unsigned int p, unsigned int t) { uint32_t pct = (t ? (p * 100U / t) : 0U); Serial.printf("OTA: %u%%\r\n", pct); });
-    ArduinoOTA.onError([](ota_error_t e) { Serial.printf("OTA err %u\r\n", e); otaActive = false; if (RED_LED_PIN >= 0) analogWrite(RED_LED_PIN, 0); });
-    ArduinoOTA.begin();
-    otaStarted = true;
-    Serial.print(F("OTA ready, hostname: ")); Serial.println(host);
-  } else {
-    otaStarted = false;
-    Serial.println(F("OTA disabled."));
-  }
+  // The actual OTA setup is deferred until Wi-Fi connects, including
+  // passwords/settings newly provided by the first-run config portal.
+  otaStarted = false;
 
-  // Modbus TCP – spustit jen když povoleno
-  modbusSetup();
-
+  // Modbus server starts with the other listeners after STA association.
+  modbusActive = false;
   lastHvacResponse = millis();
-
-  // Volitelný rychlý “probe” po startu pro debug linky
-  hvac.handleHvac();
-  delay(10);
-  hvacStatus s = hvac.getStatus();
-  Serial.printf("HVAC probe: room=%d, out=%d\n", (int)s.roomTemperature, (int)s.outsideTemperature);
+  Serial.printf("[BOOT %lu ms] setup() completed; HVAC continues regardless of Wi-Fi\n",
+                (unsigned long)millis());
 }
 
 void loop() {
-  if (deviceConfig.otaEnable && otaStarted) {
+  // Highest priority: the original Toshiba handshake and RX collector.
+  hvac.handleHvac();
+  static bool hvacConnectLogged = false;
+  if (hvac.isConnected() && !hvacConnectLogged) {
+    hvacConnectLogged = true;
+    Serial.printf("[BOOT %lu ms] HVAC UART CONNECTED (rx_ok=%lu)\n",
+                  (unsigned long)millis(), (unsigned long)hvac.validPackets());
+  }
+
+  // STA and WiFiManager AP are serviced cooperatively in loop().
+  maintainWiFiBoot();
+
+  if (networkServicesStarted && WiFi.status() == WL_CONNECTED &&
+      deviceConfig.otaEnable && otaStarted) {
     ArduinoOTA.handle();
   }
 
@@ -2761,17 +2723,19 @@ void loop() {
   bootRedLedHandle();
   otaLedHandle(); // animace červené LED během OTA
 
-  if (mqttEnabled) {
+  // Do not allow a blocking MQTT TCP attempt during the first handshake and
+  // full initial Toshiba query. UART is serviced before this block.
+  if (networkServicesStarted && WiFi.status() == WL_CONNECTED && mqttEnabled &&
+      (millis() - firmwareBootMs >= MQTT_BOOT_GUARD_MS)) {
     if (!mqttClient.connected()) connectToMQTT();
     if (mqttClient.connected()) mqttClient.loop();
   }
 
-  server.handleClient();
-  handleTelnet();
-  handleFlashButton();  // krátký stisk FLASH otevře WiFiManager portál
-
-  // HVAC servisní funkce
-  hvac.handleHvac();
+  if (networkServicesStarted && WiFi.status() == WL_CONNECTED) {
+    server.handleClient();
+    handleTelnet();
+  }
+  handleFlashButton(); // manual portal remains accessible as before
 
   // Modbus obsluha
   if (modbusActive) {
