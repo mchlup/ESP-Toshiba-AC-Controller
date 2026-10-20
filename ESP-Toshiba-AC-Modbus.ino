@@ -2530,7 +2530,8 @@ static void applySavedPortalParameters() {
   strlcpy(deviceConfig.mqttServer, p_mqtt_server.getValue(), sizeof(deviceConfig.mqttServer));
   deviceConfig.mqttPort = (uint16_t)atoi(p_mqtt_port.getValue());
   strlcpy(deviceConfig.mqttUser, p_mqtt_user.getValue(), sizeof(deviceConfig.mqttUser));
-  strlcpy(deviceConfig.mqttPassword, p_mqtt_pass.getValue(), sizeof(deviceConfig.mqttPassword));
+  if (p_mqtt_pass.getValue()[0])
+    strlcpy(deviceConfig.mqttPassword, p_mqtt_pass.getValue(), sizeof(deviceConfig.mqttPassword));
   strlcpy(deviceConfig.mqttCmdTopic, p_mqtt_cmd.getValue(), sizeof(deviceConfig.mqttCmdTopic));
   strlcpy(deviceConfig.mqttStateTopic, p_mqtt_state.getValue(), sizeof(deviceConfig.mqttStateTopic));
   strlcpy(deviceConfig.mqttHeartbeatTopic, p_mqtt_hb.getValue(), sizeof(deviceConfig.mqttHeartbeatTopic));
@@ -2553,10 +2554,12 @@ static void applySavedPortalParameters() {
   }
 
   deviceConfig.otaEnable = (uint8_t)atoi(p_ota_en.getValue());
-  strlcpy(deviceConfig.otaPassword, p_ota_pass.getValue(), sizeof(deviceConfig.otaPassword));
+  if (p_ota_pass.getValue()[0])
+    strlcpy(deviceConfig.otaPassword, p_ota_pass.getValue(), sizeof(deviceConfig.otaPassword));
 
   deviceConfig.telnetEnable = (uint8_t)atoi(p_telnet_en.getValue());
-  strlcpy(deviceConfig.telnetPassword, p_telnet_pass.getValue(), sizeof(deviceConfig.telnetPassword));
+  if (p_telnet_pass.getValue()[0])
+    strlcpy(deviceConfig.telnetPassword, p_telnet_pass.getValue(), sizeof(deviceConfig.telnetPassword));
 
   saveConfig();
   computeDeviceID();
@@ -2759,7 +2762,7 @@ void setup() {
   char portStr[6]; snprintf(portStr, sizeof(portStr), "%u", deviceConfig.mqttPort);
   p_mqtt_port.setValue(portStr, sizeof(portStr));
   p_mqtt_user.setValue(deviceConfig.mqttUser, sizeof(deviceConfig.mqttUser));
-  p_mqtt_pass.setValue(deviceConfig.mqttPassword, sizeof(deviceConfig.mqttPassword));
+  p_mqtt_pass.setValue("", 0); // never render a saved password on the open configuration AP
   p_mqtt_cmd.setValue(deviceConfig.mqttCmdTopic, sizeof(deviceConfig.mqttCmdTopic));
   p_mqtt_state.setValue(deviceConfig.mqttStateTopic, sizeof(deviceConfig.mqttStateTopic));
   p_mqtt_hb.setValue(deviceConfig.mqttHeartbeatTopic, sizeof(deviceConfig.mqttHeartbeatTopic));
@@ -2781,12 +2784,12 @@ void setup() {
   // OTA parametry
   char otaEnStr[2]; snprintf(otaEnStr, sizeof(otaEnStr), "%u", (unsigned)deviceConfig.otaEnable);
   p_ota_en.setValue(otaEnStr, sizeof(otaEnStr));
-  p_ota_pass.setValue(deviceConfig.otaPassword, sizeof(deviceConfig.otaPassword));
+  p_ota_pass.setValue("", 0); // never render a saved password on the open configuration AP
 
   // Telnet parametry
   char tEnStr[2]; snprintf(tEnStr, sizeof(tEnStr), "%u", (unsigned)deviceConfig.telnetEnable);
   p_telnet_en.setValue(tEnStr, sizeof(tEnStr));
-  p_telnet_pass.setValue(deviceConfig.telnetPassword, sizeof(deviceConfig.telnetPassword));
+  p_telnet_pass.setValue("", 0); // never render a saved password on the open configuration AP
 
   wifiManager.setSaveConfigCallback(saveConfigCallback);
 
