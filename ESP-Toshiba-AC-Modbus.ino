@@ -1067,6 +1067,8 @@ static void publishState() {
   bumpRevIfChanged();
 }
 
+#include "HaCapabilities.h"
+
 // ================== Modbus: mapování helpery ==================
 // ====== CUSTOM MODE MAP (HREG_MODE) ======
 // Nastav požadované kódy pro Modbus HREG_MODE:
@@ -2575,6 +2577,9 @@ void setup() {
 #endif
   server.on("/", handleRoot);
   server.on("/command", HTTP_POST, handleCommand);
+  server.on("/api/restart", HTTP_POST, handleRestart);
+  server.on("/api/extensions", HTTP_GET, handleExtensionsGet);
+  server.on("/api/extensions", HTTP_POST, handleExtensionsPost);
   server.on("/mqttconfig", HTTP_POST, handleMQTTConfig);
   server.on("/debug", handleDebug);
   server.on("/service", HTTP_GET, handleServicePage);
@@ -2707,6 +2712,7 @@ void setup() {
 }
 
 void loop() {
+  if(restartAfterMs && (int32_t)(millis()-restartAfterMs)>=0) ESP.restart();
   // Highest priority: the original Toshiba handshake and RX collector.
   hvac.handleHvac();
   static bool hvacConnectLogged = false;
@@ -2733,7 +2739,7 @@ void loop() {
   if (networkServicesStarted && WiFi.status() == WL_CONNECTED && mqttEnabled &&
       (millis() - firmwareBootMs >= MQTT_BOOT_GUARD_MS)) {
     if (!mqttClient.connected()) connectToMQTT();
-    if (mqttClient.connected()) mqttClient.loop();
+    if (mqttClient.connected()) { mqttClient.loop(); if(discoveryPending){discoveryPending=false;publishHaDiscovery();} }
   }
 
   if (networkServicesStarted && WiFi.status() == WL_CONNECTED) {
