@@ -363,12 +363,11 @@ async function loadExtensions(){
 $('saveCapabilities').addEventListener('click',async()=>{
   const btn=$('saveCapabilities');btn.disabled=true;
   try{
-    let discovery=$('haDiscovery').value;
-    const updates=[new URLSearchParams({discovery})];
-    $('[data-capability]').forEach(el=>updates.push(new URLSearchParams({feature:el.dataset.capability,status:el.value})));
-    for(const body of updates){
-      await request('/api/extensions',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},body:body.toString()});
-    }
+    const body=new URLSearchParams({discovery:$('haDiscovery').value});
+    $$('[data-capability]').forEach(el=>body.set('cap_'+el.dataset.capability,el.value));
+    await request('/api/extensions',{method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},
+      body:body.toString()});
     toast(translations.apply||'Uloženo');loadExtensions();
   }catch(err){toast('Capability Manager: '+err.message,'error');}
   finally{btn.disabled=false;}
