@@ -2021,93 +2021,29 @@ static void handleTelnet() {
 
 // ================== FLASH button: vyvolání WiFiManager portálu ==================
 static void enterConfigPortal() {
-  // Do not interfere with an already running nonblocking startup portal.
-  if (wifiManager.getConfigPortalActive()) {
-    Serial.println(F("[FLASH] Config portal is already active."));
-    return;
+  if (wifiManager.getConfigPortalActive()) return;
+  Serial.println(F("[FLASH] Nonblocking WiFiManager portal requested"));
+  // Stop port-80 listener while the captive portal owns it.
+  if (networkServicesStarted) {
+    server.stop();
+    if (telnetClient) telnetClient.stop();
+    telnetServer.stop();
+    if (mqttClient.connected()) mqttClient.disconnect();
+    modbusActive = false;
+    networkServicesStarted = false;
   }
-  Serial.println(F("[FLASH] Request to open WiFiManager config portal"));
-
-  // Stop služeb, aby portál měl volné porty a AP naskočilo spolehlivě
-  server.stop();
-  if (mqttClient.connected()) mqttClient.disconnect();
-  bool modbusWasActive = modbusActive;
-  modbusActive = false;
-
-  // čistý AP mód kvůli stabilitě portálu
-  WiFi.disconnect();
-  WiFi.softAPdisconnect(true);
-  WiFi.mode(WIFI_AP);
-
-  wifiManager.setConfigPortalBlocking(true);
-  wifiManager.setBreakAfterConfig(true);
-  wifiManager.setConfigPortalTimeout(300); // 5 min
-
+  wifiPortalManual = true;
+  wifiPortalStartedMs = millis();
+  wifiManager.setConfigPortalBlocking(false);
+  wifiManager.setConfigPortalTimeout(300);
   char apName[40];
-  snprintf(apName, sizeof(apName), "Toshiba-%s-HVAC-Setup", deviceID);
-  Serial.printf("[FLASH] Starting portal SSID: %s (connect and open http://192.168.4.1)\n", apName);
-
-  bool saved = wifiManager.startConfigPortal(apName);
-  Serial.printf("[FLASH] Portal finished: %s\n", saved ? "SAVED/CONNECTED" : "TIMEOUT/EXIT");
-
-  if (shouldSaveConfig) {
-    Serial.println(F("[FLASH] Applying params from portal..."));
-    deviceConfig.mqttEnable = (uint8_t)atoi(p_mqtt_en.getValue());
-    strlcpy(deviceConfig.mqttServer, p_mqtt_server.getValue(), sizeof(deviceConfig.mqttServer));
-    deviceConfig.mqttPort = (uint16_t)atoi(p_mqtt_port.getValue());
-    strlcpy(deviceConfig.mqttUser, p_mqtt_user.getValue(), sizeof(deviceConfig.mqttUser));
-    strlcpy(deviceConfig.mqttPassword, p_mqtt_pass.getValue(), sizeof(deviceConfig.mqttPassword));
-    strlcpy(deviceConfig.mqttCmdTopic, p_mqtt_cmd.getValue(), sizeof(deviceConfig.mqttCmdTopic));
-    strlcpy(deviceConfig.mqttStateTopic, p_mqtt_state.getValue(), sizeof(deviceConfig.mqttStateTopic));
-    strlcpy(deviceConfig.mqttHeartbeatTopic, p_mqtt_hb.getValue(), sizeof(deviceConfig.mqttHeartbeatTopic));
-
-    deviceConfig.useCustomId = (uint8_t)atoi(p_dev_id_en.getValue());
-    strlcpy(deviceConfig.customDeviceId, p_dev_id.getValue(), sizeof(deviceConfig.customDeviceId));
-    sanitizeDeviceId(deviceConfig.customDeviceId);
-
-    deviceConfig.modbusEnable = (uint8_t)atoi(p_mb_enable.getValue());
-    { // pouze info
-      uint16_t mp = (uint16_t)atoi(p_mb_port.getValue());
-      deviceConfig.modbusPort = (mp == 0 ? 502 : mp);
-    }
-    { // pouze info
-      int uid = atoi(p_mb_uid.getValue());
-      if (uid < 1) uid = 1; if (uid > 247) uid = 247;
-      deviceConfig.modbusUnitId = (uint8_t)uid;
-    }
-
-    // OTA (WiFiManager parametry)
-    deviceConfig.otaEnable = (uint8_t)atoi(p_ota_en.getValue());
-    strlcpy(deviceConfig.otaPassword, p_ota_pass.getValue(), sizeof(deviceConfig.otaPassword));
-
-    // Telnet
-    deviceConfig.telnetEnable = (uint8_t)atoi(p_telnet_en.getValue());
-    strlcpy(deviceConfig.telnetPassword, p_telnet_pass.getValue(), sizeof(deviceConfig.telnetPassword));
-
-    saveConfig();
-    shouldSaveConfig = false;
-    computeDeviceID();
+  snprintf(apName,sizeof(apName),"Toshiba-%s-HVAC-Setup",deviceID);
+  // Unprotected AP intentionally retained by project policy.
+  wifiManager.startConfigPortal(apName);
+  if (!wifiManager.getConfigPortalActive()) {
+    wifiPortalManual = false;
+    wifiPortalLastClosedMs = millis();
   }
-
-  // návrat do STA + restart služeb
-  WiFi.mode(WIFI_STA);
-
-  mqttEnabled = deviceConfig.mqttEnable != 0;
-  if (mqttEnabled && deviceConfig.mqttServer[0]) {
-    configureMqttClient();
-  }
-
-  server.begin();
-  if (modbusWasActive || deviceConfig.modbusEnable) {
-    modbusSetup();
-  }
-
-  // Telnet
-  telnetEnabled = (deviceConfig.telnetEnable != 0);
-  if (telnetEnabled) { telnetServer.begin(); telnetServer.setNoDelay(true); }
-
-  Serial.print(F("[FLASH] Current IP (STA): "));
-  Serial.println(WiFi.localIP());
 }
 
 static void handleFlashButton() {
@@ -2406,6 +2342,8 @@ static void startNetworkServicesAfterWiFi() {
 
 static void startNonblockingConfigPortal() {
   if (wifiManager.getConfigPortalActive() || networkServicesStarted) return;
+  wifiPortalStartedMs = millis();
+  wifiPortalManual = false;
   wifiManager.setConfigPortalBlocking(false);
   wifiManager.setConfigPortalTimeout(300);
   char apName[40];
@@ -2426,13 +2364,24 @@ static void startNonblockingConfigPortal() {
 static void maintainWiFiBoot() {
   const uint32_t now = millis();
   const bool wasPortalActive = wifiManager.getConfigPortalActive();
-  if (wasPortalActive) wifiManager.process();
+  if (wasPortalActive) {
+    wifiManager.process();
+    // Enforce timeout also in nonblocking mode.
+    if (wifiPortalStartedMs && millis() - wifiPortalStartedMs >= WIFI_PORTAL_MANUAL_LIMIT_MS) {
+      wifiManager.stopConfigPortal();
+      wifiPortalStartedMs = 0;
+      wifiPortalManual = false;
+      Serial.println(F("[WiFi] Captive portal timeout"));
+    }
+  }
 
   // Parameters were written by WiFiManager callback; commit outside callbacks.
   if (shouldSaveConfig) applySavedPortalParameters();
 
   const bool portalActive = wifiManager.getConfigPortalActive();
   if (wasPortalActive && !portalActive) {
+    wifiPortalStartedMs = 0;
+    wifiPortalManual = false;
     wifiPortalLastClosedMs = millis();
     wifiAttemptStartMs = millis();
     Serial.printf("[BOOT %lu ms] WiFiManager portal closed\n", (unsigned long)millis());
