@@ -103,6 +103,7 @@ class ToshibaCarrierHvac {
         uint32_t _handshakeAttempts = 0;
         uint32_t _invalidPackets = 0;
         uint32_t _validPackets = 0;
+        uint32_t _stateChanges = 0;
 
         // callback
         STATUS_UPDATED_CALLBACK_SIGNATURE {nullptr};
@@ -171,6 +172,7 @@ class ToshibaCarrierHvac {
         bool syncUserSettings(void);
         bool processData(byte data[], size_t dataLen);
         bool readPacket(byte data[], size_t dataLen);
+        bool knownFunction(byte command);
         bool findHeader(byte data[], size_t dataLen, const byte header[], size_t headerLen);
         uint8_t findHeaderStart(byte data[], size_t dataLen, const byte header[], size_t headerLen);
         bool chunkSplit(byte data[], size_t dataLen);
@@ -222,6 +224,7 @@ class ToshibaCarrierHvac {
         uint32_t lastValidRxMs() const { return _lastValidFrameMs; }
         uint32_t handshakeAttempts() const { return _handshakeAttempts; }
         uint32_t validPackets() const { return _validPackets; }
+        uint32_t stateChanges() const { return _stateChanges; }
         uint32_t invalidPackets() const { return _invalidPackets; }
         void forceQueryAllData(void);
         bool sendCustomPacket(byte data[], size_t length);
