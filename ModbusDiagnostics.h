@@ -4,6 +4,14 @@
 // Additional HOLDING registers. Existing 0..11 addresses stay unchanged.
 // Counters are split into 16-bit words (low at 100/101/102, high at 110/111/112).
 static uint32_t maxLoopDurationMs = 0;
+static uint16_t resetReasonCode() {
+#if defined(ESP32)
+  return (uint16_t)esp_reset_reason();
+#else
+  const rst_info* info=ESP.getResetInfoPtr();
+  return info?(uint16_t)info->reason:0xFFFF;
+#endif
+}
 static const uint16_t DIAG_START = 100;
 static const uint16_t DIAG_END   = 112;
 static void modbusAddDiagnostics() {
@@ -24,7 +32,7 @@ static void modbusUpdateDiagnostics() {
   mb.Hreg(104,WiFi.status()==WL_CONNECTED ? static_cast<uint16_t>((int16_t)WiFi.RSSI()) : 32767);
   mb.Hreg(105,static_cast<uint16_t>(min(ESP.getFreeHeap()/1024UL,65535UL)));
   mb.Hreg(106,static_cast<uint16_t>(mqttConnectCount));
-  mb.Hreg(107,0); // reset reason is exposed via /api/metrics, if supported
+  mb.Hreg(107,resetReasonCode()); // platform-specific reset reason code
   mb.Hreg(108,lastCommandStatus);
   mb.Hreg(109,static_cast<uint16_t>(min(maxLoopDurationMs,65535UL)));
   mb.Hreg(110,static_cast<uint16_t>(good>>16));
@@ -48,6 +56,7 @@ static void handleMetrics() {
   doc["free_heap_bytes"]=ESP.getFreeHeap();
   doc["max_loop_ms"]=maxLoopDurationMs;
   doc["last_command_status"]=lastCommandStatus;
+  doc["reset_reason_code"]=resetReasonCode();
   if(doc.overflowed()){server.send(500,"text/plain","JSON overflow");return;}
   String result;serializeJson(doc,result);
   server.send(200,"application/json",result);
