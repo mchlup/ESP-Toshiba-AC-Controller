@@ -123,7 +123,7 @@ const $$ = selector => document.querySelectorAll(selector);
 const range = $('tempRange'), target = $('targetTemp'), power = $('powerButton');
 const labels = {auto:'Auto',cool:'Chlazení',heat:'Topení',dry:'Odvlhčení',fan_only:'Ventilátor',fix:'Pevné',v_swing:'Svisle',h_swing:'Vodorovně',hv_swing:'Obě osy',vh_swing:'Obě osy',quiet:'Tichý',lvl_1:'Stupeň 1',lvl_2:'Stupeň 2',lvl_3:'Stupeň 3',lvl_4:'Stupeň 4',lvl_5:'Stupeň 5'};
 let state=null, polling=false, editedAt=0, pending=null, toastTimer=0, errors=0, loadedSettings=false;
-const describe = value => labels[value] || value || '—';
+const describe = value => (translations && translations[value]) || labels[value] || value || '—';
 const tempText = v => typeof v==='number' && Number.isFinite(v) ? v.toFixed(1)+' °C' : '—';
 function toast(message,type='ok'){
   const element=$('toast');
@@ -146,7 +146,7 @@ function updateTemperature(t){
 function render(data){
   state=data;errors=0;
   const online=data.hvac==='Active';
-  updatePill(online?'ok':'bad',online?'HVAC online':'HVAC offline');
+  updatePill(online?'ok':'bad',online?(translations.connection_online||'HVAC online'):(translations.connection_offline||'HVAC offline'));
   const deviceName=data.name||'Toshiba HVAC';
   $('dashboardTitle').textContent=deviceName;
   $('roomName').textContent=data.room ? 'Místnost: '+data.room : 'Lokální ovládání klimatizace';
@@ -155,7 +155,7 @@ function render(data){
   const isOn=data.power==='on';
   power.dataset.power=isOn?'on':'off';power.setAttribute('aria-pressed',String(isOn));
   $('powerButtonLabel').textContent=isOn?(translations.power_off||'Vypnout'):(translations.power_on||'Zapnout');
-  $('powerInfo').textContent=isOn?'Klimatizace zapnutá':'Klimatizace vypnutá';
+  $('powerInfo').textContent=isOn?(translations.power_on_state||'Klimatizace zapnutá'):(translations.power_off_state||'Klimatizace vypnutá');
   $('hvacState').textContent=online?'Komunikuje':'Bez spojení';
   $('hvacState').style.color=online?'var(--good)':'var(--danger)';
   $('indoorTemp').textContent=tempText(data.t_in);
@@ -294,6 +294,22 @@ const capabilityNames = {
 };
 let translations = {};
 let language = 'cs';
+const originalLiteralNodes = new WeakMap();
+function translateLiterals(dictionary){
+  const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+  let node;
+  while((node=walker.nextNode())){
+    const parent=node.parentElement;
+    if(!parent || parent.closest('[data-i18n]') || ['SCRIPT','STYLE'].includes(parent.tagName))continue;
+    if(!originalLiteralNodes.has(node))originalLiteralNodes.set(node,node.nodeValue);
+    const original=originalLiteralNodes.get(node);
+    const trimmed=original.trim();
+    if(!trimmed)continue;
+    const newText=(dictionary.literals||{})[trimmed] || trimmed;
+    if(newText!==trimmed)node.nodeValue=original.replace(trimmed,newText);
+    else node.nodeValue=original;
+  }
+}
 async function setLanguage(code){
   if(code!=='cs' && code!=='en') code='cs';
   try {
@@ -306,6 +322,7 @@ async function setLanguage(code){
       const msg=dictionary[el.dataset.i18n];
       if(typeof msg==='string')el.textContent=msg;
     });
+    translateLiterals(dictionary);
     if(state)render(state);
   } catch(err){toast('Language / Jazyk: '+err.message,'error');}
 }
