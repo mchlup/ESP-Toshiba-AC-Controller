@@ -207,6 +207,10 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
       <div class="settings-actions">
         <span id="featureMessage" class="muted" role="status"></span>
         <button type="button" id="saveFeatures" class="btn btn-primary" data-i18n="apply_capabilities">Uložit schopnosti</button>
+        <a class="btn btn-ghost" href="/api/backup" download="toshiba-settings.json">Export / Backup</a>
+        <label class="btn btn-ghost" for="restoreFile">Import JSON
+          <input id="restoreFile" type="file" accept=".json,application/json" hidden>
+        </label>
         <button type="button" id="restartDevice" class="btn btn-danger" data-i18n="restart">Restartovat zařízení</button>
       </div>
     </section>
