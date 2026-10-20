@@ -100,6 +100,12 @@ h2{font-size:17px;font-weight:740;letter-spacing:-.025em;margin:5px 0 0}.page-he
 .app-footer{display:flex;justify-content:space-between;color:var(--muted);border-top:1px solid var(--line);margin:35px 0 24px;padding-top:20px;font-size:11px;gap:12px}
 .toast{position:fixed;bottom:25px;right:24px;z-index:50;max-width:min(400px,calc(100vw - 30px));color:var(--surface);background:var(--ink);padding:15px 20px;box-shadow:0 16px 50px rgba(10,21,38,.3);border-radius:13px;font-size:13px;font-weight:600}
 .toast[data-type="error"]{background:var(--danger);color:#fff}.toast[data-type="ok"]{background:var(--good);color:#fff}
+.language-box{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);font-weight:700}
+.language-box select{padding:7px;background:var(--surface);border:1px solid var(--line);border-radius:9px;color:var(--ink)}
+.feature-grid{margin-top:18px}
+.btn-danger{border-color:var(--danger);color:var(--danger)}
+.btn-danger:hover{background:var(--danger);color:#fff}
+.field small{color:var(--muted);font-size:10px}
 @media(max-width:1060px){.topbar{gap:14px}.nav-item{padding:10px 11px}.brand-name strong{font-size:13px}.brand-symbol{width:39px;height:39px}.card{padding:20px}.app-shell{width:min(100% - 36px,1160px)}}
 @media(max-width:900px){.topbar{flex-wrap:wrap;padding:18px 0;min-height:0}.brand{margin-right:auto}.primary-nav{order:3;width:100%;justify-content:space-between;margin:5px 0 0}.top-actions{margin-left:auto}.dashboard-grid{grid-template-columns:1fr 1fr}.thermostat,.overview{grid-column:1/-1}.temperature-readings{grid-template-columns:1fr 1fr}.settings-grid{grid-template-columns:1fr}}
 @media(max-width:620px){.app-shell{width:calc(100% - 24px)}main{padding-top:22px}.page-heading{align-items:start;flex-direction:column;margin-bottom:20px;gap:9px}.last-update{font-size:11px}.topbar{gap:12px}.top-actions{gap:8px}.connection-pill{padding:9px 10px;font-size:11px}.primary-nav{gap:0;overflow:auto;scrollbar-width:none}.nav-item{padding:10px 9px;font-size:12px}.dashboard-grid{grid-template-columns:1fr;gap:12px}.thermostat,.overview,.mode-card{grid-column:auto}.card{padding:18px;border-radius:17px}.choice-grid-five{grid-template-columns:repeat(5,minmax(0,1fr));gap:6px}.choice{min-height:78px;font-size:10px;padding:8px 2px}.choice-symbol{font-size:21px}.fan-grid{gap:7px}.temperature-readings{gap:9px}.reading{padding:13px;min-height:121px}.reading strong{font-size:27px}.setpoint-top{padding-top:26px}.thermostat-controls{gap:9px}.temp-adjust{width:43px;height:43px}.target-value{min-width:157px;font-size:72px}.slider-wrap{padding-left:8px;padding-right:8px}.power-button{min-width:115px;padding:12px 13px}.field-grid{grid-template-columns:1fr}.field.wide{grid-column:auto}.settings-actions>span{flex-basis:100%}.app-footer{margin-top:26px}}
@@ -339,6 +345,20 @@ $('saveFeatures').addEventListener('click',async()=>{
     toast(t('save_ok'));
   }catch(err){$('featureMessage').textContent=err.message;toast(t('save_fail'),'error');}
   finally{button.disabled=false;}
+});
+$('restoreFile').addEventListener('change',async e=>{
+  const file=e.target.files?.[0];
+  if(!file)return;
+  if(file.size>3000){toast('Backup is too large','error');e.target.value='';return;}
+  if(!confirm('Importovat nastavení? / Restore this configuration?')){e.target.value='';return;}
+  try{
+    const json=await file.text();
+    await request('/api/restore',{method:'POST',
+      headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},body:json});
+    toast('Konfigurace importována / Restored. Restart recommended.');
+    loadedSettings=false;loadSettings();loadFeatures();
+  }catch(err){toast(err.message,'error');}
+  finally{e.target.value='';}
 });
 $('restartDevice').addEventListener('click',async()=>{
   if(!confirm(t('restart_confirm')))return;
