@@ -24,15 +24,16 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
       <span class="brand-name"><strong>TOSHIBA</strong><small>HVAC CONTROLLER</small></span>
     </a>
     <nav class="primary-nav" aria-label="Hlavní nabídka">
-      <button class="nav-item is-active" type="button" data-view="dashboard" aria-current="page">Ovládání</button>
-      <button class="nav-item" type="button" data-view="settings">Nastavení</button>
-      <a class="nav-item" href="/service">Servis</a>
-      <a class="nav-item" href="/debug">Diagnostika</a>
+      <button class="nav-item is-active" data-i18n="dashboard" type="button" data-view="dashboard" aria-current="page">Ovládání</button>
+      <button class="nav-item" data-i18n="settings" type="button" data-view="settings">Nastavení</button>
+      <a class="nav-item" data-i18n="service" href="/service">Servis</a>
+      <a class="nav-item" data-i18n="diagnostics" href="/debug">Diagnostika</a>
     </nav>
     <div class="top-actions">
       <span class="connection-pill" id="connectionPill" data-state="loading" role="status" aria-live="polite">
         <span class="status-light" aria-hidden="true"></span><span id="connectionText">Připojování</span>
       </span>
+      <label class="lang-switch" title="Language / Jazyk"><span class="sr-only">Jazyk / Language</span><select id="languageSelect" aria-label="Jazyk / Language"><option value="cs">Čeština</option><option value="en">English</option></select></label>
       <button class="icon-button" id="themeToggle" type="button" title="Přepnout vzhled" aria-label="Přepnout světlý a tmavý vzhled">◐</button>
     </div>
   </header>
@@ -52,7 +53,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
           <div class="card-head"><span class="section-label">TEPLOTA</span>
             <span class="chip chip-soft" id="modeCaption">—</span>
           </div>
-          <div class="setpoint-top"><p id="targetTitle">Požadovaná teplota</p>
+          <div class="setpoint-top"><p id="targetTitle" data-i18n="target">Požadovaná teplota</p>
             <div class="thermostat-controls">
               <button type="button" class="temp-adjust" id="tempDown" aria-label="Snížit teplotu o jeden stupeň" disabled>−</button>
               <output id="targetTemp" for="tempRange" class="target-value">--<span>°C</span></output>
@@ -99,7 +100,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
         </section>
 
         <section class="card fan-card" aria-labelledby="fanTitle">
-          <div class="card-head"><div><span class="section-label">VENTILÁTOR</span><h2 id="fanTitle">Rychlost proudění</h2></div>
+          <div class="card-head"><div><span class="section-label">VENTILÁTOR</span><h2 id="fanTitle" data-i18n="fan">Rychlost proudění</h2></div>
             <span class="chip chip-soft" id="fanCaption">—</span>
           </div>
           <div class="choice-grid fan-grid" role="group" aria-label="Rychlost ventilátoru">
@@ -113,7 +114,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
         </section>
 
         <section class="card swing-card" aria-labelledby="swingTitle">
-          <div class="card-head"><div><span class="section-label">LAMELY</span><h2 id="swingTitle">Směr proudění</h2></div><span class="chip chip-soft" id="swingCaption">—</span></div>
+          <div class="card-head"><div><span class="section-label">LAMELY</span><h2 id="swingTitle" data-i18n="swing">Směr proudění</h2></div><span class="chip chip-soft" id="swingCaption">—</span></div>
           <div class="choice-grid swing-grid" role="group" aria-label="Pohyb lamel">
             <button type="button" class="choice compact" data-cmd="SWING_OFF" data-match="fix" aria-pressed="false">Pevné</button>
             <button type="button" class="choice compact" data-cmd="SWING_V" data-match="v_swing" aria-pressed="false">Svisle</button>
@@ -179,11 +180,24 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
               <label class="field">Heslo Telnet<input name="telnet_pass" type="password" maxlength="63" placeholder="Ponechat beze změny"></label>
             </div>
           </section>
+<section class="card settings-card" id="capabilityCard">
+  <div class="card-head"><div><span class="section-label">HOME ASSISTANT</span><h2 data-i18n="capabilities">Podporované funkce</h2></div></div>
+  <div class="field-grid"><label class="field"><span data-i18n="ha_discovery">Home Assistant Discovery</span>
+    <select id="haDiscovery"><option value="0">Off</option><option value="1">On</option></select></label></div>
+  <p class="hint" data-i18n="features_note">Neověřené funkce zůstávají dostupné. Nepodporované jsou skryty v Discovery.</p>
+  <div id="capabilityList" class="capability-list" aria-live="polite"></div>
+  <button class="btn btn-primary" type="button" id="saveCapabilities" data-i18n="apply">Uložit</button>
+</section>
+<section class="card settings-card">
+  <div class="card-head"><div><span class="section-label">SYSTEM</span><h2 data-i18n="device">Zařízení</h2></div></div>
+  <p class="hint">Restart ESP nevymaže konfiguraci a neodesílá příkaz vypnutí klimatizace.</p>
+  <button class="btn btn-danger" type="button" id="restartDevice" data-i18n="restart">Restartovat zařízení</button>
+</section>
         </div>
         <div class="settings-actions">
           <span id="settingsMessage" class="muted" role="status" aria-live="polite">Změny budou použity po uložení.</span>
           <button type="button" class="btn btn-ghost" id="reloadSettings">Znovu načíst</button>
-          <button type="submit" class="btn btn-primary" id="saveSettings">Uložit nastavení →</button>
+          <button type="submit" class="btn btn-primary" id="saveSettings" data-i18n="save">Uložit nastavení →</button>
         </div>
       </form>
     </section>
