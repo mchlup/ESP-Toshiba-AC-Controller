@@ -91,7 +91,10 @@ static const char LOCALE_CS[] PROGMEM = R"LOCALCS(
   "service_raw_off": "Záznam vypnout",
   "service_raw_clear": "Vymazat záznam",
   "backup": "Export konfigurace",
-  "restore": "Import konfigurace"
+  "restore": "Import konfigurace",
+  "literals": {},
+  "power_on_state": "Klimatizace zapnutá",
+  "power_off_state": "Klimatizace vypnutá"
 }
 
 )LOCALCS";
