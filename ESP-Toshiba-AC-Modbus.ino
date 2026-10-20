@@ -1451,6 +1451,34 @@ static void handleMQTTConfig() {
   }
 
   if(!requireCsrf())return;
+  // Validate ALL input before modifying the persisted configuration.
+  struct Limit { const char* key; size_t maximum; };
+  static const Limit limits[]={
+    {"server",63},{"user",39},{"pass",39},{"cmdtopic",63},{"statetopic",63},
+    {"hbtopic",63},{"webuser",19},{"webpass",19},{"ota_pass",31},
+    {"dev_id",31},{"room",23},{"name",23},{"telnet_pass",15}
+  };
+  for(const auto& limit : limits){
+    if(server.hasArg(limit.key) && server.arg(limit.key).length()>limit.maximum){
+      server.send(400,"text/plain",String("Field too long: ")+limit.key);return;
+    }
+  }
+  static const char* boolFields[]={"mqtt_en","ota_en","dev_id_en","mb_en","telnet_en"};
+  for(const char* key: boolFields){
+    if(!server.hasArg(key))continue;
+    const String value=server.arg(key);
+    if(value!="0"&&value!="1"){server.send(400,"text/plain",String("Invalid boolean: ")+key);return;}
+  }
+  if(server.hasArg("port")){
+    const String value=server.arg("port");
+    const long port=value.toInt();
+    if(port<1||port>65535||value!=String(port)){
+      server.send(400,"text/plain","Invalid MQTT port");return;
+    }
+  }
+  if(server.hasArg("webuser") && !server.arg("webuser").length()){
+    server.send(400,"text/plain","Web username cannot be empty");return;
+  }
   if (server.hasArg("mqtt_en")) deviceConfig.mqttEnable = (uint8_t)server.arg("mqtt_en").toInt();
   if (server.hasArg("server")) server.arg("server").toCharArray(deviceConfig.mqttServer, sizeof(deviceConfig.mqttServer));
   if (server.hasArg("port"))   deviceConfig.mqttPort = (uint16_t)server.arg("port").toInt();
