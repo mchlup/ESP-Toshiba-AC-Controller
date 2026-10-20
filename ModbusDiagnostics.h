@@ -12,6 +12,7 @@ static uint16_t resetReasonCode() {
   return info?(uint16_t)info->reason:0xFFFF;
 #endif
 }
+static uint16_t diagLimitU16(uint32_t value) { return value > 65535U ? 65535U : (uint16_t)value; }
 static const uint16_t DIAG_START = 100;
 static const uint16_t DIAG_END   = 112;
 static void modbusAddDiagnostics() {
@@ -28,13 +29,13 @@ static void modbusUpdateDiagnostics() {
   mb.Hreg(100,static_cast<uint16_t>(good));
   mb.Hreg(101,static_cast<uint16_t>(bad));
   mb.Hreg(102,static_cast<uint16_t>(handshakes));
-  mb.Hreg(103,lastRx ? static_cast<uint16_t>(min((millis()-lastRx)/1000UL,65535UL)) : 65535);
+  mb.Hreg(103,lastRx ? diagLimitU16((millis()-lastRx)/1000UL) : 65535);
   mb.Hreg(104,WiFi.status()==WL_CONNECTED ? static_cast<uint16_t>((int16_t)WiFi.RSSI()) : 32767);
-  mb.Hreg(105,static_cast<uint16_t>(min(ESP.getFreeHeap()/1024UL,65535UL)));
+  mb.Hreg(105,diagLimitU16(ESP.getFreeHeap()/1024UL));
   mb.Hreg(106,static_cast<uint16_t>(mqttConnectCount));
   mb.Hreg(107,resetReasonCode()); // platform-specific reset reason code
   mb.Hreg(108,lastCommandStatus);
-  mb.Hreg(109,static_cast<uint16_t>(min(maxLoopDurationMs,65535UL)));
+  mb.Hreg(109,diagLimitU16(maxLoopDurationMs));
   mb.Hreg(110,static_cast<uint16_t>(good>>16));
   mb.Hreg(111,static_cast<uint16_t>(bad>>16));
   mb.Hreg(112,static_cast<uint16_t>(handshakes>>16));
