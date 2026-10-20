@@ -265,19 +265,6 @@ static uint32_t mqttReconnectCount = 0;
 static uint32_t modbusClientWrites = 0;
 static uint32_t modbusRejectedWrites = 0;
 static uint32_t restartRequestedMs = 0;
-static char csrfToken[33] = {0};
-static bool validCsrf() {
-  if (server.header("X-Requested-With") != "XMLHttpRequest") return false;
-  return server.header("X-CSRF-Token") == csrfToken && csrfToken[0];
-}
-static void initCsrf() {
-  uint32_t keys[4];
-  for (unsigned i=0; i<4; ++i) keys[i] = (uint32_t)random(0x7FFFFFFF) ^ (micros() * (i+1));
-  snprintf(csrfToken,sizeof(csrfToken),"%08lx%08lx%08lx%08lx",
-    (unsigned long)keys[0],(unsigned long)keys[1],
-    (unsigned long)keys[2],(unsigned long)keys[3]);
-}
-
 static uint32_t wifiPortalStartedMs = 0;
 static bool wifiPortalManual = false;
 static bool modbusInitializedOnce = false;
@@ -347,6 +334,20 @@ WiFiClient        wifiClientPlain;
 PubSubClient      mqttClient;
 //ESP8266WebServer server(80);
 WebSrv server(80);
+static char csrfToken[33] = {0};
+static bool validCsrf() {
+  if (server.header("X-Requested-With") != "XMLHttpRequest") return false;
+  return server.header("X-CSRF-Token") == csrfToken && csrfToken[0];
+}
+static void initCsrf() {
+  uint32_t keys[4];
+  for (unsigned i=0; i<4; ++i) keys[i] = (uint32_t)random(0x7FFFFFFF) ^ (micros() * (i+1));
+  snprintf(csrfToken,sizeof(csrfToken),"%08lx%08lx%08lx%08lx",
+    (unsigned long)keys[0],(unsigned long)keys[1],
+    (unsigned long)keys[2],(unsigned long)keys[3]);
+}
+
+
 WiFiServer       telnetServer(23);
 WiFiClient       telnetClient;
 static bool telnetEnabled = true;
