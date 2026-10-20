@@ -10,66 +10,66 @@ static const char SERVICE_HTML[] PROGMEM = R"SERVICEHTML(
 <style>
 .service-wrap{max-width:1160px;margin:auto;padding:16px}
 .service-hero{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:14px}
-.service-card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:14px}
+.service-card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
 .service-card h2{font-size:18px;margin:0 0 12px}
 .service-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
 .service-tbl{width:100%;border-collapse:collapse;font-size:13px;word-break:break-word}
-.service-tbl th,.service-tbl td{padding:6px 7px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
+.service-tbl th,.service-tbl td{padding:6px 7px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
 .service-tbl th{color:var(--muted);font-weight:600}
 .service-tbl td:nth-child(2){font-weight:600}
 .service-form{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin-bottom:10px}
 .service-form>label{display:flex;flex-direction:column;gap:5px;min-width:140px;flex:1}
-.service-form select,.service-form input{padding:9px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:10px;min-height:39px}
+.service-form select,.service-form input{padding:9px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:10px;min-height:39px}
 .service-note{color:var(--muted);font-size:13px;line-height:1.55;margin:8px 0}
 .service-warn{border-left:4px solid var(--warn);padding:10px;background:var(--bg);border-radius:4px;font-size:13px}
 .service-status{min-height:24px;white-space:pre-wrap;overflow-wrap:anywhere}
 .service-small{font-size:12px;color:var(--muted)}
 .service-log{padding:12px;background:var(--bg);border-radius:8px;white-space:pre-wrap;word-break:break-all;max-height:400px;overflow:auto;font-size:12px}
-.service-tag{display:inline-block;padding:4px 8px;border-radius:12px;background:var(--bg);border:1px solid var(--border);font-size:12px}
+.service-tag{display:inline-block;padding:4px 8px;border-radius:12px;background:var(--bg);border:1px solid var(--line);font-size:12px}
 @media(max-width:650px){.service-grid{grid-template-columns:1fr}.service-form>label{flex-basis:100%}}
 </style></head><body><div class="service-wrap">
-<div class="service-hero"><div><h1 style="margin:4px 0">Servisn&#237; konzole Toshiba</h1>
+<div class="service-hero"><div><h1 style="margin:4px 0" data-i18n="service_title">Servisn&#237; konzole Toshiba</h1>
 <div class="service-small">Diagnostika, stav UART, funkce a ov&#283;&#345;en&#237; nat&#225;&#269;en&#237; lamel</div></div>
-<div class="btn-group"><a class="btn" href="/">Dashboard</a><a class="btn" href="/debug">Debug</a></div></div>
+<div class="btn-group"><label class="service-small">Language / Jazyk <select id="serviceLanguage"><option value="cs">CZ</option><option value="en">EN</option></select></label><a class="btn" href="/">Dashboard</a><a class="btn" href="/debug">Debug</a></div></div>
 <div class="service-warn">Zobrazen&#233; hodnoty jsou stavy hl&#225;&#353;en&#233; protokolem, nikoliv p&#345;&#237;m&#225; fyzick&#225; kontrola.
 Dostupnost funkc&#237; PURE, Power Select, Operation a pevn&#253;ch poloh lamel z&#225;vis&#237; na modelu klimatizace.
 Povely mohou zm&#283;nit provoz jednotky. Pou&#382;&#237;vejte pouze v d&#367;v&#283;ryhodn&#233; lok&#225;ln&#237; s&#237;ti.</div>
 <div class="service-card" style="margin-top:14px"><div class="service-form">
 <strong id="servConnection" class="service-tag">UART: --</strong><span id="servBuild" class="service-small"></span>
-<button class="btn" id="servRefresh" type="button">Na&#269;&#237;st stav</button>
-<button class="btn" id="servQuery" type="button">Vy&#382;&#225;dat pln&#253; stav</button>
+<button class="btn" id="servRefresh" type="button" data-i18n="service_refresh">Na&#269;&#237;st stav</button>
+<button class="btn" id="servQuery" type="button" data-i18n="service_full_query">Vy&#382;&#225;dat pln&#253; stav</button>
 </div><div class="service-status" id="servMsg" aria-live="polite"></div>
 <div class="service-small">Aktualizace stav&#367; automaticky ka&#382;d&#233; 3 s. &#381;&#225;dost o pln&#253; stav pou&#382;&#237;v&#225; p&#367;vodn&#237; &#269;asov&#225;n&#237; knihovny (nen&#237; okam&#382;it&#225;).</div></div>
 <div class="service-grid">
-<section class="service-card"><h2>Telemetrie a komunikace</h2><table class="service-tbl"><tbody id="servTelemetry"><tr><td>Na&#269;&#237;t&#225;n&#237; ...</td></tr></tbody></table></section>
-<section class="service-card"><h2>Konfigurace: potvrzeno vs. po&#382;adov&#225;no</h2>
+<section class="service-card"><h2 data-i18n="service_telemetry">Telemetrie a komunikace</h2><table class="service-tbl"><tbody id="servTelemetry"><tr><td>Na&#269;&#237;t&#225;n&#237; ...</td></tr></tbody></table></section>
+<section class="service-card"><h2 data-i18n="service_actual_requested">Konfigurace: potvrzeno vs. po&#382;adov&#225;no</h2>
 <table class="service-tbl"><thead><tr><th>Vlastnost</th><th>Hl&#225;&#353;eno</th><th>Po&#382;adov&#225;no</th><th>Posl&#225;no</th></tr></thead><tbody id="servSettings"><tr><td>Na&#269;&#237;t&#225;n&#237; ...</td></tr></tbody></table>
 <div class="service-note">Po&#382;adov&#225;no a posl&#225;no nejsou potvrzen&#233; stavy. Komunikace nemus&#237; v&#353;echny vlastnosti podporovat.</div></section>
 </div>
-<section class="service-card"><h2>Ovl&#225;d&#225;n&#237; a servisn&#237; nastaven&#237;</h2>
+<section class="service-card"><h2 data-i18n="service_control">Ovl&#225;d&#225;n&#237; a servisn&#237; nastaven&#237;</h2>
 <div class="service-form"><label>Vlastnost<select id="servField">
 <option value="power">Zapnout / vypnout</option><option value="setpoint">Po&#382;adovan&#225; teplota</option>
 <option value="mode">Re&#382;im</option><option value="fan">Ventil&#225;tor</option><option value="swing">Lamely</option>
 <option value="pure">PURE / ionizace (dle modelu)</option><option value="powerSelect">Power Select (dle modelu)</option>
 <option value="operation">Operation (dle modelu)</option><option value="wifiLed">Wi-Fi LED (dle modelu)</option>
 </select></label><label>Hodnota<select id="servValue"></select></label>
-<button class="btn primary" id="servApply" type="button">Odeslat povel</button></div>
+<button class="btn primary" id="servApply" type="button" data-i18n="service_apply">Odeslat povel</button></div>
 <label class="service-note" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="servArmed"> Povolit servisn&#237; ovl&#225;d&#225;n&#237; (odeslan&#233; povely mohou zm&#283;nit provoz)</label>
 <div class="service-note">Povely jsou validov&#225;ny a odes&#237;l&#225;ny p&#367;vodn&#237; knihovnou. Str&#225;nka neumo&#382;&#328;uje odes&#237;lat libovoln&#233; syrov&#233; UART pakety.</div></section>
-<section class="service-card"><h2>Test manu&#225;ln&#237;ch poloh lamel</h2>
+<section class="service-card"><h2 data-i18n="service_swing_test">Test manu&#225;ln&#237;ch poloh lamel</h2>
 <p class="service-note">Test odes&#237;l&#225; standardn&#237; p&#345;&#237;kaz pro pevn&#253; &#250;hel, sleduje hodnotu hl&#225;&#353;enou klimatizac&#237; a p&#345;&#237;jem UART.
 Pokud se poloha po testu nevr&#225;t&#237; jako potvrzen&#225;, m&#367;&#382;e j&#237;t o nepodporovanou funkci, zpo&#382;d&#283;n&#237; nebo nep&#345;ijet&#237; p&#345;&#237;kazu.
 Ani potvrzen&#253; &#250;daj automaticky nedokazuje mechanick&#253; pohyb.</p>
 <div class="service-form"><label>C&#237;lov&#225; poloha<select id="servSwingPos">
 <option value="fix_pos_1">FIX 1</option><option value="fix_pos_2">FIX 2</option><option value="fix_pos_3">FIX 3</option>
 <option value="fix_pos_4">FIX 4</option><option value="fix_pos_5">FIX 5</option></select></label>
-<button class="btn primary" type="button" id="servSwingTest">Spustit test</button></div>
+<button class="btn primary" type="button" id="servSwingTest" data-i18n="service_start_test">Spustit test</button></div>
 <p id="servSwingReport" class="service-status">Zat&#237;m nebyl zah&#225;jen test.</p>
-<div class="service-form"><button class="btn" type="button" data-observe="yes">Lamely se fyzicky pohnuly</button>
-<button class="btn" type="button" data-observe="no">Bez viditeln&#233;ho pohybu</button>
+<div class="service-form"><button class="btn" type="button" data-observe="yes" data-i18n="service_yes">Lamely se fyzicky pohnuly</button>
+<button class="btn" type="button" data-observe="no" data-i18n="service_no">Bez viditeln&#233;ho pohybu</button>
 <button class="btn" type="button" data-observe="unknown">Nev&#237;m / reset pozorov&#225;n&#237;</button></div>
 <p class="service-note">Pozorov&#225;n&#237; pohybu se ukl&#225;d&#225; pouze do RAM ESP. Pro srovn&#225;n&#237; otestujte FIX 1 a FIX 5 a zaznamenejte skute&#269;n&#253; pohyb.</p></section>
-<section class="service-card"><h2>Z&#225;znam komunikace</h2><div class="service-form">
+<section class="service-card"><h2 data-i18n="service_raw">Z&#225;znam komunikace</h2><div class="service-form">
 <button class="btn" type="button" id="servRawLoad">Na&#269;&#237;st RAW z&#225;znam</button>
 <button class="btn" type="button" id="servSniffOn">Z&#225;znam zapnout</button>
 <button class="btn" type="button" id="servSniffOff">Z&#225;znam vypnout</button>
@@ -82,7 +82,28 @@ RX z&#225;znam obsahuje dek&#243;dovan&#233; payloady. Na&#269;ten&#237; logu je
 
 static const char SERVICE_JS[] PROGMEM = R"SERVICEJS(
 'use strict';
+
 const $serv = id => document.getElementById(id);
+async function serviceTranslate(code){
+  if(code!=='en')code='cs';
+  try{
+    const response=await fetch('/locale/'+code+'.json',{credentials:'same-origin'});
+    if(!response.ok)return;
+    const messages=await response.json();
+    document.documentElement.lang=code;
+    document.querySelectorAll('[data-i18n]').forEach(el=>{
+      if(messages[el.dataset.i18n])el.textContent=messages[el.dataset.i18n];
+    });
+    $serv('serviceLanguage').value=code;
+    try{localStorage.setItem('toshiba-language',code);}catch(_){}
+  }catch(_){}
+}
+document.addEventListener('DOMContentLoaded',()=>{
+  let selected='cs';
+  try{selected=localStorage.getItem('toshiba-language')||'cs';}catch(_){}
+  serviceTranslate(selected);
+  $serv('serviceLanguage').addEventListener('change',event=>serviceTranslate(event.target.value));
+});
 const configs = {
   power:[['on','ON'],['off','OFF']],
   setpoint:Array.from({length:14},(_,i)=>[String(i+17),String(i+17)+' C']),
@@ -109,7 +130,7 @@ const displayTable = (id,rows) => {
   }
 };
 function message(msg,isError=false){
-  const area=$serv('servMsg'); area.textContent=msg; area.style.color=isError?'var(--bad)':'var(--fg)';
+  const area=$serv('servMsg'); area.textContent=msg; area.style.color=isError?'var(--danger)':'var(--ink)';
 }
 function populate(){
   const v=$serv('servValue'),name=$serv('servField').value;
@@ -127,7 +148,7 @@ async function update(){
   try {
     const x=await readState();
     $serv('servConnection').textContent='HVAC UART: '+(x.connected?'Pripojeno':'Odpojeno');
-    $serv('servConnection').style.color=x.connected?'var(--ok)':'var(--bad)';
+    $serv('servConnection').style.color=x.connected?'var(--good)':'var(--danger)';
     $serv('servBuild').textContent='Verze '+text(x.build)+' | uptime '+Math.floor(x.uptime_ms/1000)+' s';
     const t=x.telemetry||{}, d=x.diag||{};
     displayTable('servTelemetry',[
@@ -152,7 +173,7 @@ async function update(){
       result.textContent=(states[test.status]||text(test.status))+' | pred: '+text(test.before)+
         ', cil: '+text(test.target)+', nyni: '+text(test.actual)+', cas: '+String(test.elapsed_ms||0)+' ms | '+
         (manual[test.observation]||'Bez lidskeho pozorovani');
-      result.style.color=test.status==='reported'?'var(--ok)':(test.status==='unconfirmed'?'var(--warn)':'var(--fg)');
+      result.style.color=test.status==='reported'?'var(--good)':(test.status==='unconfirmed'?'var(--warn)':'var(--ink)');
     }
   } catch(e){ message('Nepodarilo se nacist servisni stav: '+e.message,true); }
 }
