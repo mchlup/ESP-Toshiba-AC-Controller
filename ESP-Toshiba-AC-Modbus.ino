@@ -2086,6 +2086,13 @@ pwmWriteCompat(RED_LED_PIN, val);
 // ======== FW UPDATE (upload .bin přes web) ========
 static volatile bool fw_in_progress = false;
 static String fw_result;
+static void resumeAfterFailedUpdate() {
+  fw_in_progress = false;
+  if(networkServicesStarted && WiFi.status()==WL_CONNECTED &&
+     deviceConfig.modbusEnable && modbusServerInitialized)
+    modbusActive = true;
+  Serial.println(F("[FW] Modbus and MQTT can resume after upload failure."));
+}
 
 static void handleFwPage() {
   if (!handleAuthentication()) return;
@@ -2141,6 +2148,8 @@ static void handleFwUpload() {
 
       if (!okBegin) {
         Update.printError(Serial);
+        fw_result = "ERROR";
+        resumeAfterFailedUpdate();
       }
     } break;
 
@@ -2161,6 +2170,7 @@ static void handleFwUpload() {
         Update.printError(Serial);
         fw_result = "ERROR";
       }
+      if(fw_result!="OK") resumeAfterFailedUpdate();
       fw_in_progress = false;
     } break;
 
@@ -2168,6 +2178,7 @@ static void handleFwUpload() {
       Update.end();
       fw_in_progress = false;
       fw_result = "ABORT";
+      resumeAfterFailedUpdate();
       Serial.println("FW: aborted.");
     } break;
   }
