@@ -287,6 +287,7 @@ volatile bool shouldSaveConfig = false;
 uint32_t lastHvacResponse = 0;
 uint32_t lastHeartbeat = 0;
 uint32_t lastStatePub = 0;
+static uint32_t lastModbusSync=0;
 bool mqttEnabled = false;          // výchozí OFF
 int  mqttFailCount = 0;
 static uint32_t mqttConnectCount=0;
@@ -2798,9 +2799,13 @@ void loop() {
 
   uint32_t now = millis();
 
+  if(modbusActive && now-lastModbusSync >= 1000UL) {
+    modbusSyncFromHVAC();
+    modbusUpdateDiagnostics();
+    lastModbusSync=now;
+  }
   if (now - lastStatePub >= STATE_PUBLISH_MS) {
     publishState();
-    if (modbusActive) { modbusSyncFromHVAC(); modbusUpdateDiagnostics(); }
     lastStatePub = now;
   }
 
