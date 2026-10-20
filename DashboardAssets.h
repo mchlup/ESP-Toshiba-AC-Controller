@@ -24,12 +24,17 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
       <span class="brand-name"><strong>TOSHIBA</strong><small>HVAC CONTROLLER</small></span>
     </a>
     <nav class="primary-nav" aria-label="Hlavní nabídka">
-      <button class="nav-item is-active" type="button" data-view="dashboard" aria-current="page">Ovládání</button>
-      <button class="nav-item" type="button" data-view="settings">Nastavení</button>
-      <a class="nav-item" href="/service">Servis</a>
-      <a class="nav-item" href="/debug">Diagnostika</a>
+      <button class="nav-item is-active" type="button" data-view="dashboard" aria-current="page"data-i18n="dashboard">Ovládání</button>
+      <button class="nav-item" type="button" data-view="settings"data-i18n="settings">Nastavení</button>
+      <a class="nav-item" href="/service"data-i18n="service">Servis</a>
+      <a class="nav-item" href="/debug"data-i18n="diagnostics">Diagnostika</a>
     </nav>
     <div class="top-actions">
+      <label class="language-box" for="languageSelect"><span data-i18n="language">Jazyk</span>
+        <select id="languageSelect" aria-label="Language / Jazyk">
+          <option value="cs">CZ</option><option value="en">EN</option>
+        </select>
+      </label>
       <span class="connection-pill" id="connectionPill" data-state="loading" role="status" aria-live="polite">
         <span class="status-light" aria-hidden="true"></span><span id="connectionText">Připojování</span>
       </span>
@@ -52,7 +57,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
           <div class="card-head"><span class="section-label">TEPLOTA</span>
             <span class="chip chip-soft" id="modeCaption">—</span>
           </div>
-          <div class="setpoint-top"><p id="targetTitle">Požadovaná teplota</p>
+          <div class="setpoint-top"><p id="targetTitle" data-i18n="setpoint">Požadovaná teplota</p>
             <div class="thermostat-controls">
               <button type="button" class="temp-adjust" id="tempDown" aria-label="Snížit teplotu o jeden stupeň" disabled>−</button>
               <output id="targetTemp" for="tempRange" class="target-value">--<span>°C</span></output>
@@ -73,10 +78,10 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
         </section>
 
         <section class="card overview" aria-labelledby="overviewTitle">
-          <div class="card-head"><h2 id="overviewTitle">Aktuální hodnoty</h2><span class="subtle">živá data</span></div>
+          <div class="card-head"><h2 id="overviewTitle" data-i18n="readings">Aktuální hodnoty</h2><span class="subtle">živá data</span></div>
           <div class="temperature-readings">
-            <div class="reading"><div class="reading-icon" aria-hidden="true">↘</div><div><span class="reading-title">V místnosti</span><strong id="indoorTemp">—</strong></div></div>
-            <div class="reading"><div class="reading-icon outdoor" aria-hidden="true">↗</div><div><span class="reading-title">Venku</span><strong id="outdoorTemp">—</strong></div></div>
+            <div class="reading"><div class="reading-icon" aria-hidden="true">↘</div><div><span class="reading-title" data-i18n="room_temp">V místnosti</span><strong id="indoorTemp">—</strong></div></div>
+            <div class="reading"><div class="reading-icon outdoor" aria-hidden="true">↗</div><div><span class="reading-title" data-i18n="outdoor_temp">Venku</span><strong id="outdoorTemp">—</strong></div></div>
           </div>
           <div class="divider"></div>
           <div class="status-rows">
@@ -99,7 +104,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
         </section>
 
         <section class="card fan-card" aria-labelledby="fanTitle">
-          <div class="card-head"><div><span class="section-label">VENTILÁTOR</span><h2 id="fanTitle">Rychlost proudění</h2></div>
+          <div class="card-head"><div><span class="section-label">VENTILÁTOR</span><h2 id="fanTitle" data-i18n="fan_speed">Rychlost proudění</h2></div>
             <span class="chip chip-soft" id="fanCaption">—</span>
           </div>
           <div class="choice-grid fan-grid" role="group" aria-label="Rychlost ventilátoru">
@@ -113,7 +118,7 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
         </section>
 
         <section class="card swing-card" aria-labelledby="swingTitle">
-          <div class="card-head"><div><span class="section-label">LAMELY</span><h2 id="swingTitle">Směr proudění</h2></div><span class="chip chip-soft" id="swingCaption">—</span></div>
+          <div class="card-head"><div><span class="section-label">LAMELY</span><h2 id="swingTitle" data-i18n="airflow">Směr proudění</h2></div><span class="chip chip-soft" id="swingCaption">—</span></div>
           <div class="choice-grid swing-grid" role="group" aria-label="Pohyb lamel">
             <button type="button" class="choice compact" data-cmd="SWING_OFF" data-match="fix" aria-pressed="false">Pevné</button>
             <button type="button" class="choice compact" data-cmd="SWING_V" data-match="v_swing" aria-pressed="false">Svisle</button>
@@ -124,10 +129,10 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
         </section>
 
         <section class="card quick-card" aria-labelledby="quickTitle">
-          <div class="card-head"><div><span class="section-label">NÁSTROJE</span><h2 id="quickTitle">Další možnosti</h2></div></div>
+          <div class="card-head"><div><span class="section-label">NÁSTROJE</span><h2 id="quickTitle" data-i18n="more_options">Další možnosti</h2></div></div>
           <div class="quick-links">
-            <a href="/service"><span class="quick-icon">↗</span><span><strong>Servisní diagnostika</strong><small>Detailní stav a testy klimatizace</small></span><span class="quick-arrow">→</span></a>
-            <a href="/fw"><span class="quick-icon">↑</span><span><strong>Aktualizace firmware</strong><small>Bezpečné nahrání nové verze</small></span><span class="quick-arrow">→</span></a>
+            <a href="/service"><span class="quick-icon">↗</span><span><strong data-i18n="service_diagnostics">Servisní diagnostika</strong><small>Detailní stav a testy klimatizace</small></span><span class="quick-arrow">→</span></a>
+            <a href="/fw"><span class="quick-icon">↑</span><span><strong data-i18n="firmware">Aktualizace firmware</strong><small>Bezpečné nahrání nové verze</small></span><span class="quick-arrow">→</span></a>
           </div>
         </section>
       </div>
@@ -183,9 +188,27 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
         <div class="settings-actions">
           <span id="settingsMessage" class="muted" role="status" aria-live="polite">Změny budou použity po uložení.</span>
           <button type="button" class="btn btn-ghost" id="reloadSettings">Znovu načíst</button>
-          <button type="submit" class="btn btn-primary" id="saveSettings">Uložit nastavení →</button>
+          <button type="submit" class="btn btn-primary" id="saveSettings" data-i18n="save">Uložit nastavení →</button>
         </div>
       </form>
+      <div class="settings-grid feature-grid">
+        <section class="card settings-card">
+          <div class="card-head"><div><span class="section-label">MQTT</span><h2 data-i18n="ha_discovery">Home Assistant MQTT Discovery</h2></div></div>
+          <label class="field"><span data-i18n="ha_discovery_help">Automatické přidání klimatizace do Home Assistantu přes MQTT</span>
+            <select id="haDiscovery"><option value="0">Off</option><option value="1">On</option></select>
+          </label>
+        </section>
+        <section class="card settings-card">
+          <div class="card-head"><div><span class="section-label">HVAC</span><h2 data-i18n="capabilities">Podporované funkce</h2></div></div>
+          <p class="hint" data-i18n="capability_note">Auto = dosud neověřeno. Nepodporované funkce se nezobrazují v Home Assistantu.</p>
+          <div id="capabilityFields" class="field-grid"></div>
+        </section>
+      </div>
+      <div class="settings-actions">
+        <span id="featureMessage" class="muted" role="status"></span>
+        <button type="button" id="saveFeatures" class="btn btn-primary" data-i18n="apply_capabilities">Uložit schopnosti</button>
+        <button type="button" id="restartDevice" class="btn btn-danger" data-i18n="restart">Restartovat zařízení</button>
+      </div>
     </section>
   </main>
   <footer class="app-footer"><span>Toshiba HVAC · Lokální ovládání</span><span id="deviceIdentifier">—</span></footer>
