@@ -174,6 +174,8 @@ static uint16_t crc16_ccitt(const uint8_t* data, size_t len, uint16_t seed = 0xF
   return crc;
 }
 
+#include "ControllerExtensions.h"
+
 // === VÝCHOZÍ NAPLNĚNÍ KONFIGU ===
 static void fillDefaultConfig(DeviceConfig &cfg) {
   memset(&cfg, 0, sizeof(cfg));
@@ -382,6 +384,7 @@ static uint16_t crc16_x25(const uint8_t* data, size_t len) {
 
 static void loadConfig() {
   EEPROM.begin(EEPROM_SIZE);
+  loadExtensions();
   EEPROM.get(0, deviceConfig);
   if (!isConfigValid(deviceConfig)) {
     fillDefaultConfig(deviceConfig);
@@ -985,6 +988,7 @@ static void configureMqttClient() {
   mqttClient.setServer(deviceConfig.mqttServer, deviceConfig.mqttPort);
   // Bound MQTT CONNACK wait; an unresponsive broker must not starve UART.
   mqttClient.setSocketTimeout(3);
+  if (!mqttClient.setBufferSize(1024)) Serial.println(F("MQTT buffer allocation failed"));
   mqttClient.setCallback(mqttCallback);
 }
 
@@ -1011,6 +1015,7 @@ static void connectToMQTT() {
 
   if (ok) {
     mqttFailCount = 0;
+    discoveryPending = true;
     mqttClient.publish(statusTopic, "online", true);
     char cmdTopic[96]; expandTopic(deviceConfig.mqttCmdTopic, cmdTopic, sizeof(cmdTopic));
     mqttClient.subscribe(cmdTopic, 1);
@@ -1057,7 +1062,7 @@ static void publishState() {
   Serial.print(F("Publikovaný stav: ")); Serial.println(payload);
 
   if (mqttEnabled && mqttClient.connected()) {
-    mqttClient.publish(topic, reinterpret_cast<const uint8_t*>(payload.c_str()), payload.length(), false);
+    if (!mqttClient.publish(topic, reinterpret_cast<const uint8_t*>(payload.c_str()), payload.length(), false)) Serial.println(F("MQTT publish failed (packet size/transport)"));
   }
   bumpRevIfChanged();
 }
@@ -1447,7 +1452,7 @@ static void handleMQTTConfig() {
   // Restart Modbusu dle nastavení
   // Avoid repeatedly calling mb.server()/addHreg() for an already active server.
   if (deviceConfig.modbusEnable) {
-    if (!modbusActive) modbusSetup();
+    if (!modbusActive && WiFi.status() == WL_CONNECTED && networkServicesStarted) modbusSetup();
   } else {
     modbusActive = false;
   }
@@ -2738,7 +2743,7 @@ void loop() {
   handleFlashButton(); // manual portal remains accessible as before
 
   // Modbus obsluha
-  if (modbusActive) {
+  if (modbusActive && WiFi.status() == WL_CONNECTED) {
     mb.task();
     modbusApplyWrites();
   }
@@ -2783,7 +2788,7 @@ void loop() {
     } else if (!hvacConn) {
       digitalWrite(LED_PIN, (now / 500) % 2 ? LOW : HIGH);
     } else {
-      if (LED_PIN >= 0) digitalWrite(LED_PIN, LOW);                                 // OK = trvale svítí
+      digitalWrite(LED_PIN, LOW);                                 // OK = trvale svítí
     }
   }
 
