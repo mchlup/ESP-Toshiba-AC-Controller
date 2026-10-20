@@ -346,6 +346,17 @@ async function loadExtensions(){
   try{
     const data=await(await request('/api/extensions')).json();
     $('haDiscovery').value=String(data.discovery?1:0);
+    const cap=data.capabilities||{};
+    const swingControls=[
+      ['SWING_V','swing_v'],['SWING_H','swing_h'],['SWING_VH','swing_both']
+    ];
+    for(const [cmd,feature] of swingControls){
+      const button=document.querySelector('[data-cmd="'+cmd+'"]');
+      if(button){
+        button.disabled=cap[feature]==='unsupported';
+        button.title=button.disabled?'Not supported by configured device profile':'';
+      }
+    }
     const container=$('capabilityList');
     container.replaceChildren();
     capabilityNames.forEach(name=>{
