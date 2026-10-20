@@ -71,20 +71,38 @@ static void handleExtensionsPost() {
   if(!server.authenticate(deviceConfig.webUser,deviceConfig.webPassword)){server.requestAuthentication();return;}
   if(server.header("X-Requested-With")!="XMLHttpRequest"){server.send(403,"text/plain","Invalid request");return;}
   if(!requireCsrf())return;
+  // Stage the entire update, reject malformed fields before modifying EEPROM.
+  ExtensionConfig next=extCfg;
   if(server.hasArg("discovery")) {
-    String choice=server.arg("discovery");
-    if(choice!="0"&&choice!="1"){server.send(400,"text/plain","Invalid value");return;}
-    if(extCfg.discovery && choice=="0")publishHaRemoval();
-    extCfg.discovery=(choice=="1");
+    const String value=server.arg("discovery");
+    if(value!="0"&&value!="1"){server.send(400,"text/plain","Invalid discovery value");return;}
+    next.discovery=(value=="1");
   }
   if(server.hasArg("feature")) {
-    int idx=capIndex(server.arg("feature"));
-    String value=server.arg("status");
-    if(idx<0||(value!="0"&&value!="1"&&value!="2")){server.send(400,"text/plain","Invalid capability");return;}
-    extCfg.caps[idx]=(uint8_t)value.toInt();
+    const int idx=capIndex(server.arg("feature"));
+    const String value=server.arg("status");
+    if(idx<0||(value!="0"&&value!="1"&&value!="2")){
+      server.send(400,"text/plain","Invalid capability");return;
+    }
+    next.caps[idx]=(uint8_t)value.toInt();
   }
-  saveExtensions();discoveryPending=true;
-  server.send(200,"text/plain","Saved");
+  for(int i=0;i<7;++i){
+    const String field=String("cap_")+CAP_NAMES[i];
+    if(!server.hasArg(field))continue;
+    const String value=server.arg(field);
+    if(value!="0"&&value!="1"&&value!="2"){
+      server.send(400,"text/plain","Invalid capability");return;
+    }
+    next.caps[i]=(uint8_t)value.toInt();
+  }
+  bool changed=(next.discovery!=extCfg.discovery);
+  for(int i=0;i<7;++i)changed=changed||(next.caps[i]!=extCfg.caps[i]);
+  if(changed){
+    if(extCfg.discovery && !next.discovery)publishHaRemoval();
+    extCfg=next;saveExtensions();
+    discoveryPending=true;
+  }
+  server.send(200,"text/plain",changed?"Saved":"Unchanged");
 }
 static uint32_t restartAfterMs=0;
 static void handleRestart() {
