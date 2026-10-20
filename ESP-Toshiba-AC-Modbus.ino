@@ -1076,9 +1076,7 @@ static void connectToMQTT() {
     mqttClient.publish(statusTopic, "online", true);
     char cmdTopic[96]; expandTopic(deviceConfig.mqttCmdTopic, cmdTopic, sizeof(cmdTopic));
     mqttClient.subscribe(cmdTopic, 1);
-    if (featureOptions.haDiscovery) {
-      if (haPublishDiscovery(true)) haDiscoveryEverPublished = true;
-    }
+    if (haPublishDiscovery(featureOptions.haDiscovery)) haDiscoveryEverPublished = featureOptions.haDiscovery;
     Serial.println(F("MQTT připojeno."));
   } else {
     ++mqttFailCount;
@@ -1122,7 +1120,8 @@ static void publishState() {
   Serial.print(F("Publikovaný stav: ")); Serial.println(payload);
 
   if (mqttEnabled && mqttClient.connected()) {
-    mqttClient.publish(topic, reinterpret_cast<const uint8_t*>(payload.c_str()), payload.length(), false);
+    if (!mqttClient.publish(topic, reinterpret_cast<const uint8_t*>(payload.c_str()),payload.length(),false))
+      Serial.printf("[MQTT] publish failed (%u bytes)\n",(unsigned)payload.length());
   }
   bumpRevIfChanged();
 }
@@ -2307,6 +2306,13 @@ static void handleFwDone() {
               "<p><a class='link' href='/fw'>Zpět</a></p></div></div>");
     server.send(500, "text/html", html);
   }
+  if (fw_result != "OK") {
+    // Restore traffic without re-adding already registered holding registers.
+    modbusActive = deviceConfig.modbusEnable && modbusInitializedOnce;
+    if (modbusActive) modbusSyncFromHVAC();
+    lastMqttAttempt = 0;
+    fw_in_progress = false;
+  }
 }
 
 static void handleFactoryResetPage() {
@@ -2885,7 +2891,8 @@ void loop() {
       String payload; payload.reserve(64);
       serializeJson(doc, payload);
       char topic[96]; expandTopic(deviceConfig.mqttHeartbeatTopic, topic, sizeof(topic));
-      mqttClient.publish(topic, reinterpret_cast<const uint8_t*>(payload.c_str()), payload.length(), false);
+      if (!mqttClient.publish(topic, reinterpret_cast<const uint8_t*>(payload.c_str()),payload.length(),false))
+      Serial.printf("[MQTT] publish failed (%u bytes)\n",(unsigned)payload.length());
       Serial.print(F("Heartbeat: ")); Serial.println(payload);
     }
     if (modbusActive) {
