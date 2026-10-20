@@ -1331,6 +1331,8 @@ static void modbusSetup() {
 
 // ================== Web ==================
 #include "WebAssets.h"
+#include "LocaleCs.h"
+#include "LocaleEn.h"
 
 static bool handleAuthentication() {
   if (!server.authenticate(deviceConfig.webUser, deviceConfig.webPassword)) {
@@ -2588,6 +2590,16 @@ void setup() {
   server.on("/api/service/action", HTTP_POST, handleServiceAction);
   server.on("/app.css", handleAppCss);
   server.on("/app.js",  handleAppJs);
+  server.on("/lang/cs.json", HTTP_GET, []() {
+    if(!handleAuthentication())return;
+    server.sendHeader("Cache-Control","public, max-age=3600");
+    server.send(200,"application/json; charset=utf-8",FPSTR(LOCALE_CS));
+  });
+  server.on("/lang/en.json", HTTP_GET, []() {
+    if(!handleAuthentication())return;
+    server.sendHeader("Cache-Control","public, max-age=3600");
+    server.send(200,"application/json; charset=utf-8",FPSTR(LOCALE_EN));
+  });
 
     // --- Factory reset (chráněno web auth) ---
   server.on("/factory-reset", HTTP_GET,  handleFactoryResetPage);
