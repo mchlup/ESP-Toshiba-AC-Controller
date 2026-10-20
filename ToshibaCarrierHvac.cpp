@@ -1030,7 +1030,9 @@ bool ToshibaCarrierHvac::readPacket(byte data[], size_t dataLen) {
             HvacRawAnalyzer_onFrame(false, cmd, payload, plen);
         }
         
-        return processData(newData, data[11]);
+        // A duplicate unchanged value is still a correctly received packet.
+        processData(newData, data[11]);
+        return true;
     } else if (data[3] == getByteByName(PACKET_TYPE, PACKET_TYPE_MAP, sizeof(PACKET_TYPE), "REPLY")) {  // reply
         if (dataLen < 15 || data[13] == 0 || data[13] > dataLen-15 || data[13] > 16) return false;
         byte newData[16];
@@ -1052,7 +1054,8 @@ bool ToshibaCarrierHvac::readPacket(byte data[], size_t dataLen) {
             HvacRawAnalyzer_onFrame(false, cmd, payload, plen);
         }
         
-        return processData(newData, data[13]);
+        processData(newData, data[13]);
+        return true;
     } else if (data[3] == getByteByName(PACKET_TYPE, PACKET_TYPE_MAP, sizeof(PACKET_TYPE), "SYN/ACK")) {    // syn/ack
         #ifdef HVAC_DEBUG
         DEBUG_PORT.println(F("HVAC> Received handshake SYN/ACK"));
@@ -1069,7 +1072,7 @@ bool ToshibaCarrierHvac::readPacket(byte data[], size_t dataLen) {
     } else {   // unknown
         #ifdef HVAC_DEBUG
         DEBUG_PORT.print(F("HVAC> Received "));
-        DEBUG_PORT.print(getNameByByte(PACKET_TYPE_MAP, PACKET_TYPE, sizeof(PACKET_TYPE_MAP), data[3]));
+        DEBUG_PORT.print(getNameByByte(PACKET_TYPE_MAP, PACKET_TYPE, sizeof(PACKET_TYPE), data[3]));
         DEBUG_PORT.println(F(" packet from hvac"));
         #endif
         return false;
