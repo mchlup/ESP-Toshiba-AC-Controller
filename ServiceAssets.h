@@ -156,13 +156,22 @@ async function update(){
     }
   } catch(e){ message('Nepodarilo se nacist servisni stav: '+e.message,true); }
 }
+let serviceCsrfToken = '';
+async function serviceGetCsrf(){
+  if (serviceCsrfToken) return serviceCsrfToken;
+  const r = await fetch('/api/security/token',{credentials:'same-origin',cache:'no-store'});
+  if (!r.ok) throw new Error('CSRF token request failed');
+  serviceCsrfToken=(await r.json()).csrf || '';
+  return serviceCsrfToken;
+}
 async function action(name,field,value){
   const data=new URLSearchParams({action:name});
   if(field!==undefined)data.set('field',field);
   if(value!==undefined)data.set('value',value);
   const res=await fetch('/api/service/action',{
     method:'POST',credentials:'same-origin',cache:'no-store',
-    headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},
+    headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest',
+      'X-CSRF-Token':await serviceGetCsrf()},
     body:data.toString()
   });
   const reply=await res.text();
