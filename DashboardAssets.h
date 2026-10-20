@@ -24,10 +24,10 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
       <span class="brand-name"><strong>TOSHIBA</strong><small>HVAC CONTROLLER</small></span>
     </a>
     <nav class="primary-nav" aria-label="Hlavní nabídka">
-      <button class="nav-item is-active" type="button" data-view="dashboard" aria-current="page"data-i18n="dashboard">Ovládání</button>
-      <button class="nav-item" type="button" data-view="settings"data-i18n="settings">Nastavení</button>
-      <a class="nav-item" href="/service"data-i18n="service">Servis</a>
-      <a class="nav-item" href="/debug"data-i18n="diagnostics">Diagnostika</a>
+      <button class="nav-item is-active" type="button" data-view="dashboard" aria-current="page" data-i18n="dashboard">Ovládání</button>
+      <button class="nav-item" type="button" data-view="settings" data-i18n="settings">Nastavení</button>
+      <a class="nav-item" href="/service" data-i18n="service">Servis</a>
+      <a class="nav-item" href="/debug" data-i18n="diagnostics">Diagnostika</a>
     </nav>
     <div class="top-actions">
       <label class="language-box" for="languageSelect"><span data-i18n="language">Jazyk</span>
