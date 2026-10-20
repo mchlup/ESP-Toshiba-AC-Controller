@@ -148,7 +148,7 @@ function render(data){
   $('lastUpdate').textContent='Aktualizováno '+new Date().toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
   const isOn=data.power==='on';
   power.dataset.power=isOn?'on':'off';power.setAttribute('aria-pressed',String(isOn));
-  $('powerButtonLabel').textContent=isOn?'Vypnout':'Zapnout';
+  $('powerButtonLabel').textContent=isOn?(translations.power_off||'Vypnout'):(translations.power_on||'Zapnout');
   $('powerInfo').textContent=isOn?'Klimatizace zapnutá':'Klimatizace vypnutá';
   $('hvacState').textContent=online?'Komunikuje':'Bez spojení';
   $('hvacState').style.color=online?'var(--good)':'var(--danger)';
@@ -224,7 +224,7 @@ function showView(view){
     b.classList.toggle('is-active',active);
     if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');
   });
-  if(setting&&!loadedSettings)loadSettings();
+  if(setting){if(!loadedSettings)loadSettings();loadFeatures();}
 }
 $$('[data-view]').forEach(el=>el.addEventListener('click',()=>showView(el.dataset.view)));
 async function loadSettings(){
@@ -264,6 +264,81 @@ $('settingsForm').addEventListener('submit',async event=>{
   finally{save.disabled=false;}
 });
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll();});
+
+const capabilityKeys = [
+  'swing_fixed','swing_vertical','swing_horizontal','swing_both','swing_positions',
+  'pure','power_select','operation','wifi_led'
+];
+const capabilityNames = {
+  swing_fixed:'Pevná poloha / Fixed',swing_vertical:'Svisle / Vertical',
+  swing_horizontal:'Vodorovně / Horizontal',swing_both:'Obě osy / Both',
+  swing_positions:'Pevné pozice 1–5 / Fixed positions',pure:'PURE',
+  power_select:'Power Select',operation:'Operation',wifi_led:'Wi-Fi LED'
+};
+let translations = {};
+let language = 'cs';
+async function setLanguage(code){
+  if(code!=='cs' && code!=='en') code='cs';
+  try {
+    const dictionary = await (await request('/locale/'+code+'.json')).json();
+    translations=dictionary;language=code;
+    document.documentElement.lang=code;
+    $('languageSelect').value=code;
+    try{localStorage.setItem('toshiba-language',code);}catch(_){}
+    document.querySelectorAll('[data-i18n]').forEach(el=>{
+      const msg=dictionary[el.dataset.i18n];
+      if(typeof msg==='string')el.textContent=msg;
+    });
+    if(state)render(state);
+  } catch(err){toast('Language / Jazyk: '+err.message,'error');}
+}
+$('languageSelect').addEventListener('change',event=>setLanguage(event.target.value));
+try{language=localStorage.getItem('toshiba-language')||'cs'}catch(_){}
+setLanguage(language);
+const t = key => translations[key]||key;
+async function loadFeatures(){
+  try{
+    const cfg=await (await request('/api/features')).json();
+    $('haDiscovery').value=cfg.ha_discovery?'1':'0';
+    const root=$('capabilityFields');root.replaceChildren();
+    for(const key of capabilityKeys){
+      const field=document.createElement('label');field.className='field';
+      const caption=document.createElement('span');caption.textContent=capabilityNames[key];
+      const select=document.createElement('select');select.dataset.capability=key;
+      for(const [value,label] of [['auto',t('unknown')],['supported',t('supported')],['unsupported',t('unsupported')]]){
+        const option=document.createElement('option');option.value=value;option.textContent=label;select.appendChild(option);
+      }
+      select.value=cfg.capabilities?.[key]||'auto';
+      const observed=document.createElement('small');
+      observed.textContent=cfg.observed?.[key]?'UART: observed':'UART: unverified';
+      field.append(caption,select,observed);root.appendChild(field);
+    }
+    $('featureMessage').textContent=cfg.ha_available?'MQTT online':'MQTT offline';
+  }catch(err){$('featureMessage').textContent=err.message;}
+}
+$('saveFeatures').addEventListener('click',async()=>{
+  const data=new URLSearchParams({ha_discovery:$('haDiscovery').value});
+  document.querySelectorAll('[data-capability]').forEach(el=>data.set(el.dataset.capability,el.value));
+  const button=$('saveFeatures');button.disabled=true;
+  try{
+    await request('/api/features',{method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},
+      body:data.toString()});
+    $('featureMessage').textContent=t('save_ok');
+    toast(t('save_ok'));
+  }catch(err){$('featureMessage').textContent=err.message;toast(t('save_fail'),'error');}
+  finally{button.disabled=false;}
+});
+$('restartDevice').addEventListener('click',async()=>{
+  if(!confirm(t('restart_confirm')))return;
+  try{
+    await request('/api/restart',{method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},
+      body:'confirm=YES'});
+    toast(t('restart_sent'));updatePill('loading',t('restart_sent'));
+  }catch(err){toast(err.message,'error');}
+});
+
 poll();setInterval(poll,3000);
 })();
 )JS";
