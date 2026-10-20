@@ -327,6 +327,8 @@ static inline void pwmWriteCompat(int pin, int value01k){
 }
 
 
+#include "SecurityGuards.h"
+
 // Mapování Holding registrů (HREG)
 enum : uint16_t {
   HREG_POWER      = 0,   // 0/1
@@ -1423,6 +1425,7 @@ static void handleCommand() {
   if (server.header("X-Requested-With") != "XMLHttpRequest") {
     server.send(403,"text/plain","Invalid request"); return;
   }
+  if(!requireCsrf())return;
   if (server.hasArg("cmd")) {
     String c = server.arg("cmd");
     c.trim();
@@ -1446,6 +1449,7 @@ static void handleMQTTConfig() {
     server.send(403,"text/plain","Invalid request"); return;
   }
 
+  if(!requireCsrf())return;
   if (server.hasArg("mqtt_en")) deviceConfig.mqttEnable = (uint8_t)server.arg("mqtt_en").toInt();
   if (server.hasArg("server")) server.arg("server").toCharArray(deviceConfig.mqttServer, sizeof(deviceConfig.mqttServer));
   if (server.hasArg("port"))   deviceConfig.mqttPort = (uint16_t)server.arg("port").toInt();
@@ -1772,6 +1776,7 @@ static void handleServiceAction() {
     server.send(403, "text/plain", "Missing X-Requested-With header");
     return;
   }
+  if(!requireCsrf())return;
   if (!server.hasArg("action")) {
     server.send(400, "text/plain", "Missing action");
     return;
@@ -2241,6 +2246,7 @@ static void handleFactoryResetPage() {
 
 static void handleFactoryResetPost() {
   if (!handleAuthentication()) return;
+  if(!requireCsrf())return;
   if (server.hasArg("confirm") && server.arg("confirm") == "YES") {
     server.send(200, "text/plain", "Factory reset… restartuji.");
     server.client().stop();
@@ -2440,6 +2446,7 @@ void setup() {
   }
 
   Serial.begin(115200);
+  initializeCsrfNonce();
   Serial.println();
   Serial.println(F("== Boot =="));
 
@@ -2579,6 +2586,7 @@ void setup() {
 #endif
   server.on("/", handleRoot);
   server.on("/command", HTTP_POST, handleCommand);
+  server.on("/api/security", HTTP_GET, handleCsrfToken);
   server.on("/api/restart", HTTP_POST, handleRestart);
   server.on("/api/metrics", HTTP_GET, handleMetrics);
   server.on("/api/extensions", HTTP_GET, handleExtensionsGet);
