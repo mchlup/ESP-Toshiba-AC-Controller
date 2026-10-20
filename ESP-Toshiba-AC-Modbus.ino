@@ -790,6 +790,17 @@ static void bumpRevIfChanged() {
 // ================== HVAC command parsing ==================
 static bool processCommand(const char* cmd) {
   if (!cmd || !*cmd) return false;
+  if (!strncasecmp(cmd, "HA_MODE_", 8)) {
+    const char* request = cmd + 8;
+    const char* mode = nullptr;
+    if (!strcasecmp(request, "AUTO")) mode="MODE_AUTO";
+    else if (!strcasecmp(request, "HEAT")) mode="MODE_HEAT";
+    else if (!strcasecmp(request, "COOL")) mode="MODE_COOL";
+    else if (!strcasecmp(request, "DRY")) mode="MODE_DRY";
+    else if (!strcasecmp(request, "FAN_ONLY")) mode="MODE_FAN";
+    if (!mode || !processCommand("STATE_ON")) return false;
+    return processCommand(mode);
+  }
 
   // Pseudo-kódy pro TX logování (drž je unikátní mimo reálné cmd)
   static const uint8_t PSEUDO_CMD_POWER = 200;
@@ -989,7 +1000,7 @@ static void configureMqttClient() {
   mqttClient.setServer(deviceConfig.mqttServer, deviceConfig.mqttPort);
   // Bound MQTT CONNACK wait; an unresponsive broker must not starve UART.
   mqttClient.setSocketTimeout(3);
-  if (!mqttClient.setBufferSize(1024)) Serial.println(F("MQTT buffer allocation failed"));
+  if (!mqttClient.setBufferSize(2048)) Serial.println(F("MQTT buffer allocation failed"));
   mqttClient.setCallback(mqttCallback);
 }
 
@@ -1069,6 +1080,35 @@ static void publishState() {
 }
 
 #include "HaCapabilities.h"
+// Passive Capability Manager: infer support from actual HVAC feedback only.
+// A missing ACK or a lack of physical movement is NOT proof of unsupported mode.
+static bool capabilityDirty=false;
+static uint32_t capabilityLastSavedMs=0;
+static void observeCapabilities() {
+  if(!hvac.isConnected() || !hvac.validPackets()) return;
+  bool changed=false;
+  auto observed=[&](unsigned index) {
+    if(index<7 && extCfg.caps[index]==0){extCfg.caps[index]=1;changed=true;}
+  };
+  const char* swing=hvac.getSwing();
+  if(swing) {
+    if(!strcmp(swing,"v_swing")) observed(0);
+    else if(!strcmp(swing,"h_swing")) observed(1);
+    else if(!strcmp(swing,"hv_swing")) observed(2);
+    else if(!strncmp(swing,"fix_pos_",8)) observed(3);
+  }
+  const char* pure=hvac.getPure();
+  if(pure && (!strcmp(pure,"on")||!strcmp(pure,"off")))observed(4);
+  const char* power=hvac.getPowerSelect();
+  if(power && (!strcmp(power,"50%")||!strcmp(power,"75%")||!strcmp(power,"100%")))observed(5);
+  const char* op=hvac.getOperation();
+  if(op && strcmp(op,"UNKNOWN") && *op)observed(6);
+  if(changed){capabilityDirty=true;discoveryPending=true;}
+  if(capabilityDirty && millis()-capabilityLastSavedMs >= 30000UL){
+    saveExtensions();capabilityDirty=false;capabilityLastSavedMs=millis();
+  }
+}
+
 
 // ================== Modbus: mapování helpery ==================
 // ====== CUSTOM MODE MAP (HREG_MODE) ======
@@ -2668,6 +2708,7 @@ void loop() {
   if(restartAfterMs && (int32_t)(millis()-restartAfterMs)>=0) ESP.restart();
   // Highest priority: the original Toshiba handshake and RX collector.
   hvac.handleHvac();
+  observeCapabilities();
   static bool hvacConnectLogged = false;
   if (hvac.isConnected() && !hvacConnectLogged) {
     hvacConnectLogged = true;
@@ -2692,7 +2733,11 @@ void loop() {
   if (networkServicesStarted && WiFi.status() == WL_CONNECTED && mqttEnabled &&
       (millis() - firmwareBootMs >= MQTT_BOOT_GUARD_MS)) {
     if (!mqttClient.connected()) connectToMQTT();
-    if (mqttClient.connected()) { mqttClient.loop(); if(discoveryPending){discoveryPending=false;publishHaDiscovery();} }
+    if (mqttClient.connected()) { mqttClient.loop(); if(discoveryPending){
+        discoveryPending=false;
+        if(extCfg.discovery)publishHaDiscovery();
+        else publishHaRemoval();
+      } }
   }
 
   if (networkServicesStarted && WiFi.status() == WL_CONNECTED) {
