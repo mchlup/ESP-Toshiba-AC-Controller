@@ -192,6 +192,13 @@ static const char DASHBOARD_HTML[] PROGMEM = R"DASH_HTML(
   <div class="card-head"><div><span class="section-label">SYSTEM</span><h2 data-i18n="device">Zařízení</h2></div></div>
   <p class="hint">Restart ESP nevymaže konfiguraci a neodesílá příkaz vypnutí klimatizace.</p>
   <button class="btn btn-danger" type="button" id="restartDevice" data-i18n="restart">Restartovat zařízení</button>
+  <hr class="settings-divider">
+  <div class="card-head"><h2 data-i18n="config_backup">Záloha konfigurace</h2></div>
+  <p class="hint" data-i18n="backup_note">Export nezahrnuje hesla ani přihlašovací údaje Wi-Fi.</p>
+  <a class="btn" href="/api/config/backup" download="toshiba-config.json" data-i18n="download_backup">Stáhnout zálohu</a>
+  <label class="field"><span data-i18n="select_backup">Import JSON konfigurace</span>
+    <input type="file" id="importFile" accept="application/json,.json"></label>
+  <button class="btn btn-ghost" type="button" id="restoreSettings" data-i18n="restore_backup">Obnovit konfiguraci</button>
 </section>
         </div>
         <div class="settings-actions">
