@@ -1,3 +1,11 @@
+> **Experimental v2 feature branch:** Home Assistant MQTT Discovery,
+> Czech/English UI, Capability Manager, WebUI restart, diagnostic Modbus
+> registers and nonblocking WiFiManager BOOT configuration.
+> See [feature notes](docs/FEATURES-I18N-HA.md) and
+> [actual Modbus register map](docs/MODBUS-MAP.md).
+> Default admin/admin credentials and open WiFiManager AP remain intentionally
+> unchanged. Not intended for direct Internet access.
+>
 > **Experimental stabilization branch:** Firmware changes in this branch require
 > successful CI builds and testing on the actual Toshiba unit before production.
 > Read [the stabilization changelog](docs/CHANGELOG-STABILIZATION.md)
