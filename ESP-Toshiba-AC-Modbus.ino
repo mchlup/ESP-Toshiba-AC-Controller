@@ -1011,21 +1011,22 @@ static bool processCommand(const char* cmd) {
  */
 
 
+#include "HomeAssistantDiscovery.h"
+
 // ================== MQTT ==================
 static void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  char cmdTopic[96];
-  expandTopic(deviceConfig.mqttCmdTopic, cmdTopic, sizeof(cmdTopic));
-  if (!topic || strcmp(topic, cmdTopic) != 0) return;
-  if (!payload || length == 0 || length >= 64) {
-    Serial.println(F("MQTT: empty or oversized command rejected"));
-    return;
+  if (!topic || !payload || !length || length >= 64) {
+    Serial.println(F("MQTT: invalid or oversized command rejected")); return;
   }
   char cmd[64];
   memcpy(cmd, payload, length);
   cmd[length] = '\0';
-  if (!processCommand(cmd)) {
-    Serial.print(F("MQTT: command rejected: "));
-    Serial.println(cmd);
+  char baseTopic[96];
+  expandTopic(deviceConfig.mqttCmdTopic, baseTopic, sizeof(baseTopic));
+  if (!strcmp(topic, baseTopic)) {
+    if (!processCommand(cmd)) Serial.printf("MQTT: rejected command: %s\n",cmd);
+  } else if (!haCommand(topic,cmd)) {
+    Serial.println(F("MQTT: nonmatching or invalid Home Assistant command"));
   }
 }
 
@@ -1073,6 +1074,9 @@ static void connectToMQTT() {
     mqttClient.publish(statusTopic, "online", true);
     char cmdTopic[96]; expandTopic(deviceConfig.mqttCmdTopic, cmdTopic, sizeof(cmdTopic));
     mqttClient.subscribe(cmdTopic, 1);
+    if (featureOptions.haDiscovery) {
+      if (haPublishDiscovery(true)) haDiscoveryEverPublished = true;
+    }
     Serial.println(F("MQTT připojeno."));
   } else {
     ++mqttFailCount;
@@ -2794,7 +2798,16 @@ void loop() {
   if (networkServicesStarted && WiFi.status() == WL_CONNECTED && mqttEnabled &&
       (millis() - firmwareBootMs >= MQTT_BOOT_GUARD_MS)) {
     if (!mqttClient.connected()) connectToMQTT();
-    if (mqttClient.connected()) mqttClient.loop();
+    if (mqttClient.connected()) {
+      mqttClient.loop();
+      if (featureDirty && millis() - haLastPublishMs >= 5000UL) {
+        haLastPublishMs = millis();
+        if (haPublishDiscovery(featureOptions.haDiscovery)) {
+          haDiscoveryEverPublished = featureOptions.haDiscovery;
+          featureDirty = false;
+        }
+      }
+    }
   }
 
   if (networkServicesStarted && WiFi.status() == WL_CONNECTED) {
