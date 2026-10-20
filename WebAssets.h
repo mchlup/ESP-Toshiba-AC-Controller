@@ -171,7 +171,18 @@ function render(data){
   range.disabled=false;
   $('tempDown').disabled=false;$('tempUp').disabled=false;
 }
+let csrfTokenCache='';
+async function csrfTokenForRequest(){
+  if(csrfTokenCache)return csrfTokenCache;
+  const response=await fetch('/api/security/token',{cache:'no-store',credentials:'same-origin'});
+  if(!response.ok)throw new Error('Authentication / CSRF HTTP '+response.status);
+  csrfTokenCache=(await response.json()).csrf||'';
+  return csrfTokenCache;
+}
 async function request(url,options={}){
+  if(options.method && options.method.toUpperCase()==='POST'){
+    options.headers=Object.assign({},options.headers,{'X-CSRF-Token':await csrfTokenForRequest()});
+  }
   const response=await fetch(url,Object.assign({cache:'no-store',credentials:'same-origin'},options));
   if(!response.ok)throw new Error((await response.text().catch(()=>''))||'HTTP '+response.status);
   return response;
