@@ -2377,6 +2377,14 @@ static void handleFwPage() {
 }
 
 // callback z ESP8266WebServer při POST /fwupdate – streamuje data do Update.write()
+static void restoreServicesAfterFwFailure() {
+  fw_in_progress=false;
+  if (deviceConfig.modbusEnable && modbusInitializedOnce) {
+    modbusActive=true;
+    modbusSyncFromHVAC();
+  }
+  lastMqttAttempt=0; // normal reconnect, never inside upload callback
+}
 static void handleFwUpload() {
   if (!handleAuthentication()) return;
   if (!server.hasArg("csrf") || server.arg("csrf") != csrfToken) {
@@ -2405,6 +2413,8 @@ static void handleFwUpload() {
 
       if (!okBegin) {
         Update.printError(Serial);
+        fw_result = "ERROR";
+        restoreServicesAfterFwFailure();
       }
     } break;
 
@@ -2424,6 +2434,7 @@ static void handleFwUpload() {
         Serial.print("FW: error end: ");
         Update.printError(Serial);
         fw_result = "ERROR";
+        restoreServicesAfterFwFailure();
       }
       fw_in_progress = false;
     } break;
@@ -2432,6 +2443,7 @@ static void handleFwUpload() {
       Update.end();
       fw_in_progress = false;
       fw_result = "ABORT";
+      restoreServicesAfterFwFailure();
       Serial.println("FW: aborted.");
     } break;
   }
@@ -2476,11 +2488,7 @@ static void handleFwDone() {
     server.send(500, "text/html", html);
   }
   if (fw_result != "OK") {
-    // Restore traffic without re-adding already registered holding registers.
-    modbusActive = deviceConfig.modbusEnable && modbusInitializedOnce;
-    if (modbusActive) modbusSyncFromHVAC();
-    lastMqttAttempt = 0;
-    fw_in_progress = false;
+    restoreServicesAfterFwFailure();
   }
 }
 
